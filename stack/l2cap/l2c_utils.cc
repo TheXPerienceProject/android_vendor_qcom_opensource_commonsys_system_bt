@@ -33,6 +33,7 @@
 #include "btm_int.h"
 #include "btu.h"
 #include "device/include/controller.h"
+#include "hci/include/btsnoop.h"
 #include "hcidefs.h"
 #include "hcimsgs.h"
 #include "l2c_int.h"
@@ -799,6 +800,9 @@ void l2cu_send_peer_config_rej(tL2C_CCB* p_ccb, uint8_t* p_data,
       case L2CAP_CFG_TYPE_MTU:
       case L2CAP_CFG_TYPE_FLUSH_TOUT:
       case L2CAP_CFG_TYPE_QOS:
+      case L2CAP_CFG_TYPE_FCR:
+      case L2CAP_CFG_TYPE_FCS:
+      case L2CAP_CFG_TYPE_EXT_FLOW:
         p_data += cfg_len + L2CAP_CFG_OPTION_OVERHEAD;
         break;
 
@@ -1584,6 +1588,9 @@ void l2cu_release_ccb(tL2C_CCB* p_ccb) {
 #if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
   if (p_rcb && p_lcb && (p_rcb->psm != p_rcb->real_psm)) {
 #else
+  btsnoop_get_interface()->clear_l2cap_whitelist(
+      p_lcb->handle, p_ccb->local_cid, p_ccb->remote_cid);
+
   if (p_rcb && (p_rcb->psm != p_rcb->real_psm)) {
 #endif
     btm_sec_clr_service_by_psm(p_rcb->psm);

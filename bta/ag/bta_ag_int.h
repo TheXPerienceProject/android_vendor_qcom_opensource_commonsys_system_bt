@@ -274,7 +274,7 @@ typedef enum {
 } tBTA_AG_SCO_MSBC_SETTINGS;
 
 /* type for each service control block */
-typedef struct {
+struct tBTA_AG_SCB {
   char clip[BTA_AG_AT_MAX_LEN + 1];     /* number string used for CLIP */
   uint16_t serv_handle[BTA_AG_NUM_IDX]; /* RFCOMM server handles */
   tBTA_AG_AT_CB at_cb;                  /* AT command interpreter */
@@ -311,10 +311,12 @@ typedef struct {
   uint8_t roam_ind;         /* CIEV roam indicator value */
   uint8_t battchg_ind;      /* CIEV battery charge indicator value */
   uint8_t callheld_ind;     /* CIEV call held indicator value */
+  uint8_t no_of_xsco_trials; /* no of xSCO retrials when collision happened */
   uint32_t bia_masked_out;  /* indicators HF does not want us to send */
   alarm_t* collision_timer;
   alarm_t* ring_timer;
   alarm_t* codec_negotiation_timer;
+  alarm_t* xsco_conn_collision_timer; /* try xSCO again if failed due to collision */
   tBTA_AG_PEER_CODEC peer_codecs; /* codecs for eSCO supported by the peer */
   tBTA_AG_PEER_CODEC sco_codec;   /* codec to be used for eSCO connection */
   tBTA_AG_PEER_CODEC
@@ -333,7 +335,7 @@ typedef struct {
   tBTA_AG_HF_IND
       local_hf_indicators[BTA_AG_MAX_NUM_LOCAL_HF_IND]; /* Local supported
                                                     HF indicators */
-} tBTA_AG_SCB;
+};
 
 /* type for sco data */
 typedef struct {
@@ -394,7 +396,7 @@ extern void bta_ag_sm_execute(tBTA_AG_SCB* p_scb, uint16_t event,
                               tBTA_AG_DATA* p_data);
 extern bool bta_ag_hdl_event(BT_HDR* p_msg);
 extern void bta_ag_collision_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                   uint8_t app_id, const RawAddress* peer_addr);
+                                   uint8_t app_id, const RawAddress& peer_addr);
 extern void bta_ag_resume_open(tBTA_AG_SCB* p_scb);
 
 /* SDP functions */

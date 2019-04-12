@@ -258,11 +258,14 @@ static tBTA_AG_SCB* bta_ag_scb_alloc(void) {
       p_scb->codec_fallback = false;
       p_scb->peer_codecs = BTA_AG_CODEC_CVSD;
       p_scb->sco_codec = BTA_AG_CODEC_CVSD;
+      p_scb->no_of_xsco_trials = 0;
       /* set up timers */
       p_scb->ring_timer = alarm_new("bta_ag.scb_ring_timer");
       p_scb->collision_timer = alarm_new("bta_ag.scb_collision_timer");
       p_scb->codec_negotiation_timer =
           alarm_new("bta_ag.scb_codec_negotiation_timer");
+      p_scb->xsco_conn_collision_timer =
+          alarm_new("bta_ag.scb_xsco_conn_collision_timer");
       /* set eSCO mSBC setting to T2 as the preferred */
       p_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T2;
       APPL_TRACE_DEBUG("bta_ag_scb_alloc %d", bta_ag_scb_to_idx(p_scb));
@@ -304,6 +307,7 @@ void bta_ag_scb_dealloc(tBTA_AG_SCB* p_scb) {
   alarm_free(p_scb->ring_timer);
   alarm_free(p_scb->codec_negotiation_timer);
   alarm_free(p_scb->collision_timer);
+  alarm_free(p_scb->xsco_conn_collision_timer);
 
   /* initialize control block */
   memset(p_scb, 0, sizeof(tBTA_AG_SCB));
@@ -496,23 +500,26 @@ tBTA_AG_SCB* bta_ag_get_other_idle_scb(tBTA_AG_SCB* p_curr_scb) {
  ******************************************************************************/
 void bta_ag_collision_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status, uint8_t id,
                             UNUSED_ATTR uint8_t app_id,
-                            const RawAddress* peer_addr) {
+                            const RawAddress& peer_addr) {
+  uint16_t handle;
+  tBTA_AG_SCB* p_scb;
+
   /* Check if we have opening scb for the peer device. */
-  uint16_t handle = bta_ag_idx_by_bdaddr(peer_addr);
-  tBTA_AG_SCB* p_scb = bta_ag_scb_by_idx(handle);
+  handle = bta_ag_idx_by_bdaddr(&peer_addr);
+  p_scb = bta_ag_scb_by_idx(handle);
 
   if (p_scb && (p_scb->state == BTA_AG_OPENING_ST)) {
     if (id == BTA_ID_SYS) /* ACL collision */
     {
       LOG(WARNING) << __func__ << " AG found collision (ACL) for handle "
-                   << unsigned(handle) << " device " << *peer_addr;
+                   << unsigned(handle) << " device " << peer_addr;
     } else if (id == BTA_ID_AG) /* RFCOMM collision */
     {
       LOG(WARNING) << __func__ << " AG found collision (RFCOMM) for handle "
-                   << unsigned(handle) << " device " << *peer_addr;
+                   << unsigned(handle) << " device " << peer_addr;
     } else {
       LOG(WARNING) << __func__ << " AG found collision (UNKNOWN) for handle "
-                   << unsigned(handle) << " device " << *peer_addr;
+                   << unsigned(handle) << " device " << peer_addr;
     }
     bta_ag_sm_execute(p_scb, BTA_AG_COLLISION_EVT, NULL);
   }
@@ -560,6 +567,7 @@ static void bta_ag_api_enable(tBTA_AG_DATA* p_data) {
     alarm_free(bta_ag_cb.scb[i].ring_timer);
     alarm_free(bta_ag_cb.scb[i].codec_negotiation_timer);
     alarm_free(bta_ag_cb.scb[i].collision_timer);
+    alarm_free(bta_ag_cb.scb[i].xsco_conn_collision_timer);
   }
   memset(&bta_ag_cb, 0, sizeof(tBTA_AG_CB));
 

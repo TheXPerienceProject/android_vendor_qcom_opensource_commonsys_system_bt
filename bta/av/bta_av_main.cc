@@ -185,9 +185,9 @@ static void bta_av_rpc_conn(tBTA_AV_DATA* p_data);
 static void bta_av_api_to_ssm(tBTA_AV_DATA* p_data);
 
 static void bta_av_sco_chg_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                 uint8_t app_id, const RawAddress* peer_addr);
+                                 uint8_t app_id, const RawAddress& peer_addr);
 static void bta_av_sys_rs_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                uint8_t app_id, const RawAddress* peer_addr);
+                                uint8_t app_id, const RawAddress& peer_addr);
 
 static void bta_av_api_enable_multicast(tBTA_AV_DATA *p_data);
 static void bta_av_api_update_max_av_clients(tBTA_AV_DATA * p_data);
@@ -596,13 +596,8 @@ static void bta_av_api_register(tBTA_AV_DATA* p_data) {
       cs.flush_to = L2CAP_DEFAULT_FLUSH_TO;
       btav_a2dp_codec_index_t codec_index_min =
           BTAV_A2DP_CODEC_INDEX_SOURCE_MIN;
-#if (TWS_ENABLED == TRUE)
-      btav_a2dp_codec_index_t codec_index_max =
-          (btav_a2dp_codec_index_t)BTAV_VENDOR_A2DP_CODEC_INDEX_SOURCE_MAX;
-#else
       btav_a2dp_codec_index_t codec_index_max =
           BTAV_A2DP_CODEC_INDEX_SOURCE_MAX;
-#endif
 
 #if (AVDT_REPORTING == TRUE)
       if (bta_av_cb.features & BTA_AV_FEAT_REPORT) {
@@ -619,30 +614,16 @@ static void bta_av_api_register(tBTA_AV_DATA* p_data) {
       if (profile_initialized == UUID_SERVCLASS_AUDIO_SOURCE) {
         cs.tsep = AVDT_TSEP_SRC;
         codec_index_min = BTAV_A2DP_CODEC_INDEX_SOURCE_MIN;
-#if (TWS_ENABLED == TRUE)
-        codec_index_max = (btav_a2dp_codec_index_t)
-                            BTAV_VENDOR_A2DP_CODEC_INDEX_SOURCE_MAX;
-#else
         codec_index_max = BTAV_A2DP_CODEC_INDEX_SOURCE_MAX;
-#endif
       } else if (profile_initialized == UUID_SERVCLASS_AUDIO_SINK) {
         cs.tsep = AVDT_TSEP_SNK;
         cs.p_sink_data_cback = bta_av_sink_data_cback;
-#if (TWS_ENABLED == TRUE)
-        codec_index_min = (btav_a2dp_codec_index_t)BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_MIN;
-        codec_index_max = (btav_a2dp_codec_index_t)BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_MAX;
-#else
         codec_index_min = BTAV_A2DP_CODEC_INDEX_SINK_MIN;
         codec_index_max = BTAV_A2DP_CODEC_INDEX_SINK_MAX;
-#endif
       }
 
       /* Initialize handles to zero */
-#if (TWS_ENABLED == TRUE)
-      for (int xx = 0; xx < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX; xx++) {
-#else
       for (int xx = 0; xx < BTAV_A2DP_CODEC_INDEX_MAX; xx++) {
-#endif
         p_scb->seps[xx].av_handle = 0;
       }
 
@@ -1137,7 +1118,7 @@ void bta_av_restore_switch(void) {
  ******************************************************************************/
 static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
                                 uint8_t id, uint8_t app_id,
-                                const RawAddress* peer_addr) {
+                                const RawAddress& peer_addr) {
   int i;
   tBTA_AV_SCB* p_scb = NULL;
   uint8_t cur_role;
@@ -1149,7 +1130,7 @@ static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
      * role change event */
     /* note that more than one SCB (a2dp & vdp) maybe waiting for this event */
     p_scb = bta_av_cb.p_scb[i];
-    if (p_scb && p_scb->peer_addr == *peer_addr) {
+    if (p_scb && p_scb->peer_addr == peer_addr) {
       tBTA_AV_ROLE_RES* p_buf =
           (tBTA_AV_ROLE_RES*)osi_malloc(sizeof(tBTA_AV_ROLE_RES));
       APPL_TRACE_DEBUG("new_role:%d, hci_status:x%x hndl: x%x", id, app_id,
@@ -1173,9 +1154,9 @@ static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
 
   /* restore role switch policy, if role switch failed */
   if ((HCI_SUCCESS != app_id) &&
-      (BTM_GetRole(*peer_addr, &cur_role) == BTM_SUCCESS) &&
+      (BTM_GetRole(peer_addr, &cur_role) == BTM_SUCCESS) &&
       (cur_role == BTM_ROLE_SLAVE)) {
-    bta_sys_set_policy(BTA_ID_AV, HCI_ENABLE_MASTER_SLAVE_SWITCH, *peer_addr);
+    bta_sys_set_policy(BTA_ID_AV, HCI_ENABLE_MASTER_SLAVE_SWITCH, peer_addr);
   }
 
   /* if BTA_AvOpen() was called for other device, which caused the role switch
@@ -1222,7 +1203,7 @@ static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
  ******************************************************************************/
 static void bta_av_sco_chg_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
                                  UNUSED_ATTR uint8_t app_id,
-                                 UNUSED_ATTR const RawAddress* peer_addr) {
+                                 UNUSED_ATTR const RawAddress& peer_addr) {
   tBTA_AV_SCB* p_scb;
   int i;
   tBTA_AV_API_STOP stop;
