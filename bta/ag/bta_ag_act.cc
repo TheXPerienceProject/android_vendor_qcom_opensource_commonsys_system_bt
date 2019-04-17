@@ -492,7 +492,7 @@ void bta_ag_rfc_close(tBTA_AG_SCB* p_scb, UNUSED_ATTR tBTA_AG_DATA* p_data) {
   /* call close cback */
   (*bta_ag_cb.p_cback)(BTA_AG_CLOSE_EVT, (tBTA_AG*)&close);
 #if (TWS_AG_ENABLED == TRUE)
-  reset_twsp_device(bta_ag_scb_to_idx(p_scb)-1);
+  reset_twsp_device(twsp_get_idx_by_scb(p_scb));
 #endif
 
   /* if not deregistering (deallocating) reopen registered servers */
@@ -587,7 +587,7 @@ void bta_ag_rfc_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
                         BTA_AG_SVC_TIMEOUT_EVT, bta_ag_scb_to_idx(p_scb));
 #if (TWS_AG_ENABLED == TRUE)
     //Update TWS+ data structure
-    update_twsp_device(bta_ag_scb_to_idx(p_scb)-1, p_scb);
+    update_twsp_device(p_scb);
 #endif
   } else {
     /* else service level conn is open */

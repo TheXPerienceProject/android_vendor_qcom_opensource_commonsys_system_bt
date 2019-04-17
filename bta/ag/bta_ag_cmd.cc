@@ -975,7 +975,14 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
 
     case BTA_AG_AT_BLDN_EVT:
       /* Do not send OK, App will send error or OK depending on
-      ** last dial number enabled or not */
+      ** last dial number enabled or not
+      ** If SLC didn't happen yet, just send ERROR*/
+      if (!p_scb->svc_conn) {
+        event = 0;
+        APPL_TRACE_WARNING("%s: Sending ERROR from stack for BLDN received"\
+                           " before SLC", __func__);
+        bta_ag_send_error(p_scb, BTA_AG_ERR_OP_NOT_SUPPORTED);
+      }
       break;
 
     case BTA_AG_AT_D_EVT:
@@ -1217,7 +1224,12 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
       APPL_TRACE_DEBUG("%s BRSF HF: 0x%x, phone: 0x%x", __func__,
                        p_scb->peer_features, features);
 
-      if (interop_match_addr_or_name(INTEROP_DISABLE_CODEC_NEGOTIATION,
+      if (
+#if (TWS_AG_ENABLED == TRUE)
+          /* Always enable codec negotiation if it is TWS+ */
+          !is_twsp_device(p_scb->peer_addr) &&
+#endif
+      interop_match_addr_or_name(INTEROP_DISABLE_CODEC_NEGOTIATION,
           &p_scb->peer_addr))
       {
           APPL_TRACE_IMP("%s disable codec negotiation for phone, remote" \

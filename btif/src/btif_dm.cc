@@ -1911,8 +1911,6 @@ static void btif_dm_upstreams_evt(uint16_t event, char* p_param) {
       */
       btif_storage_load_bonded_devices();
 
-      btif_tws_plus_load_tws_devices();
-
       btif_vendor_update_add_on_features();
 
       btif_enable_bluetooth_evt(p_data->enable.status);
@@ -2254,6 +2252,12 @@ static void btif_dm_upstreams_evt(uint16_t event, char* p_param) {
       btif_vendor_iot_device_broadcast_event(&iot_info.bd_addr, iot_info.error_type, iot_info.error_info,
               iot_info.event_mask, iot_info.event_power_level, iot_info.event_rssi, iot_info.event_link_quality,
               iot_info.event_glitch_count);
+      break;
+    }
+
+    case BTA_DM_SSR_EVT: {
+      BTIF_TRACE_WARNING("BTA_DM_SSR_EVT");
+      HAL_CBACK(bt_vendor_callbacks, ssr_vendor_cb);
       break;
     }
 

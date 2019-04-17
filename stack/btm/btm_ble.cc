@@ -2583,7 +2583,7 @@ void btm_ble_reset_id(void) {
 
 /* This function set a random address to local controller. It also temporarily
  * disable scans and adv before sending the command to the controller. */
-void btm_ble_set_random_address(const RawAddress& random_bda) {
+bool btm_ble_set_random_address(const RawAddress& random_bda) {
   tBTM_LE_RANDOM_CB* p_cb = &btm_cb.ble_ctr_cb.addr_mgnt_cb;
   tBTM_BLE_CB* p_ble_cb = &btm_cb.ble_ctr_cb;
   bool adv_mode = btm_cb.ble_ctr_cb.inq_var.adv_mode;
@@ -2592,7 +2592,7 @@ void btm_ble_set_random_address(const RawAddress& random_bda) {
   if (btm_ble_get_conn_st() == BLE_DIR_CONN) {
     BTM_TRACE_ERROR("%s: Cannot set random address. Direct conn ongoing",
                     __func__);
-    return;
+    return false;
   }
 
   if (adv_mode == BTM_BLE_ADV_ENABLE)
@@ -2607,6 +2607,7 @@ void btm_ble_set_random_address(const RawAddress& random_bda) {
     btsnd_hcic_ble_set_adv_enable(BTM_BLE_ADV_ENABLE);
   if (BTM_BLE_IS_SCAN_ACTIVE(p_ble_cb->scan_activity)) btm_ble_start_scan();
   btm_ble_resume_bg_conn();
+  return true;
 }
 
 #if BTM_BLE_CONFORMANCE_TESTING == TRUE

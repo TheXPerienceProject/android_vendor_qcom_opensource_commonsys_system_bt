@@ -3253,7 +3253,7 @@ static bt_status_t register_notification_rsp(
 static bt_status_t get_folder_items_list_rsp(RawAddress* bd_addr,
                                              btrc_status_t rsp_status,
                                              uint16_t uid_counter,
-                                             uint8_t num_items,
+                                             uint16_t num_items,
                                              btrc_folder_items_t* p_items) {
   tAVRC_RESPONSE avrc_rsp;
   tAVRC_ITEM item;
@@ -6754,7 +6754,17 @@ static bt_status_t is_device_active_in_handoff(RawAddress *bd_addr) {
   av_addr = btif_av_get_addr_by_index(av_index);
   BTIF_TRACE_DEBUG("%s: Current AV Device Index: %d and address: %s:",
                        __func__, av_index, av_addr.ToString().c_str());
-
+#if (TWS_ENABLED == TRUE)
+  if (btif_av_current_device_is_tws()) {
+    if (btif_av_is_tws_enabled_for_dev(p_dev->rc_addr)) {
+      BTIF_TRACE_ERROR("%s:TWS+ device is streaming device",__func__);
+      return BT_STATUS_SUCCESS;
+    } else {
+      BTIF_TRACE_ERROR("%s:legacy device not active",__func__);
+      return BT_STATUS_FAIL;
+    }
+  }
+#endif
   if (connected_devices < btif_max_rc_clients) {
     if (!btif_av_is_device_connected(*bd_addr)) {
        BTIF_TRACE_ERROR("%s: AV is not connected for the device", __func__);
