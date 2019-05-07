@@ -93,7 +93,7 @@ static int reconfig_a2dp_param_val = 0;
 std::mutex session_wait_mutex_;
 std::condition_variable session_wait_cv;
 bool session_wait;
-
+RawAddress ba_addr({0xCE, 0xFA, 0xCE, 0xFA, 0xCE, 0xFA});
 
 /*****************************************************************************
  *  Constants & Macros
@@ -2807,7 +2807,7 @@ static void btif_av_handle_event(uint16_t event, char* p_param) {
       return;
     case BTIF_AV_REMOTE_SUSPEND_STREAM_REQ_EVT:
       index = (int) *p_param;
-      if(index != INVALID_INDEX && index > btif_max_av_clients &&
+      if (index != INVALID_INDEX && index > btif_max_av_clients &&
         btif_av_cb[index].remote_started == false)
         index = btif_max_av_clients;
       if (index >= btif_max_av_clients) {
@@ -2826,12 +2826,15 @@ static void btif_av_handle_event(uint16_t event, char* p_param) {
       break;
     case BTIF_AV_RESET_REMOTE_STARTED_FLAG_UPDATE_AUDIO_STATE_EVT:
       index = (int) *p_param;
-      if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
-      {
-        BTIF_TRACE_IMP("%s: on remote start clean up update audio started state for index %d", __func__, index);
-        btif_report_audio_state(BTAV_AUDIO_STATE_STARTED, &(btif_av_cb[index].peer_bda));
+      if (index >= 0 && index < btif_max_av_clients) {
+        if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
+        {
+          BTIF_TRACE_IMP("%s: on remote start clean up update audio started state for index %d",
+                          __func__, index);
+          btif_report_audio_state(BTAV_AUDIO_STATE_STARTED, &(btif_av_cb[index].peer_bda));
+        }
+        btif_av_cb[index].is_device_playing = true;
       }
-      btif_av_cb[index].is_device_playing = true;
       FALLTHROUGH;
     case BTIF_AV_RESET_REMOTE_STARTED_FLAG_EVT:
       btif_av_reset_remote_started_flag();
@@ -3179,7 +3182,7 @@ static int btif_get_conn_state_of_device(RawAddress address) {
   btif_sm_state_t state = BTIF_AV_STATE_IDLE;
   int i;
   for (i = 0; i < btif_max_av_clients; i++) {
-    if ( address == btif_av_cb[i].peer_bda ) {
+    if (address == btif_av_cb[i].peer_bda) {
       state = btif_sm_get_state(btif_av_cb[i].sm_handle);
       //BTIF_TRACE_EVENT("BD Found: %02X %02X %02X %02X %02X %02X :state: %s",
          // address[5], address[4], address[3],
@@ -3586,8 +3589,8 @@ static void bte_av_sink_media_callback(tBTA_AV_EVT event,
   switch (event) {
     case BTA_AV_SINK_MEDIA_DATA_EVT: {
       btif_sm_state_t state = btif_sm_get_state(btif_av_cb[index].sm_handle);
-      if (((state == BTIF_AV_STATE_STARTED) || (state == BTIF_AV_STATE_OPENED))
-            && (index == cur_playing_index)) {
+      if (((state == BTIF_AV_STATE_STARTED) || (state == BTIF_AV_STATE_OPENED)) &&
+            ((index == cur_playing_index) && (cur_playing_index != btif_max_av_clients))) {
         uint8_t queue_len = btif_a2dp_sink_enqueue_buf((BT_HDR*)p_data);
         BTIF_TRACE_DEBUG("%s: index = %d, packets in sink queue %d", __func__, index, queue_len);
       }
@@ -3731,8 +3734,8 @@ static bt_status_t init_src(
 static bt_status_t init_src(
     btav_source_callbacks_t* callbacks,
     int max_connected_audio_devices,
-    std::vector<btav_a2dp_codec_config_t> codec_priorities) {
-    //std::vector<btav_a2dp_codec_config_t> offload_enabled_codecs) {
+    std::vector<btav_a2dp_codec_config_t> codec_priorities,
+    std::vector<btav_a2dp_codec_config_t> offload_enabled_codecs) {
   int a2dp_multicast_state = 0;
   if(max_connected_audio_devices > BTIF_AV_NUM_CB) {
     BTIF_TRACE_ERROR("%s: App setting maximum allowable connections(%d) \
@@ -3748,7 +3751,6 @@ static bt_status_t init_src(
     btif_av_cb[i].aptx_mode = 0x1000;
     btif_av_cb[i].remote_start_alarm = NULL;
   }
-  std::vector<btav_a2dp_codec_config_t> offload_enabled_codecs;
   return init_src(callbacks, codec_priorities, offload_enabled_codecs,
                 max_connected_audio_devices, a2dp_multicast_state);
 }
@@ -4748,29 +4750,38 @@ bool btif_av_is_connected(void) {
 
 bool isBATEnabled()
 {
-    LOG_INFO(LOG_TAG,"%s:",__func__);
+    bool ret = false;
     if (btif_ba_get_state() > BTIF_BA_STATE_IDLE_AUDIO_NS)
-        return true;
+        ret = true;
     else
-        return false;
+        ret = false;
+    LOG_INFO(LOG_TAG,"%s: %d",__func__, ret);
+    return ret;
 }
 
 void initialize_audio_hidl() {
-  BTIF_TRACE_DEBUG(" %s if_init = %d ",__func__, btif_a2dp_audio_if_init);
-  if (btif_a2dp_audio_if_init == false) {
-    if (btif_av_is_split_a2dp_enabled()) {
-      BTIF_TRACE_DEBUG("%s initializing ", __func__);
-      btif_a2dp_audio_if_init = true;
-      btif_a2dp_audio_interface_init();
+  if (!btif_a2dp_source_is_hal_v2_supported()) {
+    BTIF_TRACE_DEBUG(" %s if_init = %d ",__func__, btif_a2dp_audio_if_init);
+    if (btif_a2dp_audio_if_init == false) {
+      if (btif_av_is_split_a2dp_enabled()) {
+        BTIF_TRACE_DEBUG("%s initializing ", __func__);
+        btif_a2dp_audio_if_init = true;
+        btif_a2dp_audio_interface_init();
+      } else {
+        BTIF_TRACE_DEBUG("%s cannot initialize, split not enabled ",__func__);
+      }
     } else {
-      BTIF_TRACE_DEBUG("%s cannot initialize, split not enabled ",__func__);
+      BTIF_TRACE_DEBUG("%s already initialized ", __func__);
     }
   } else {
-    BTIF_TRACE_DEBUG("%s already initialized ", __func__);
+    int index = btif_av_get_latest_device_idx_to_start();
+    //if index < btif_max_av_clients, AV -> BA switch, else null -> BA switch
+    btif_a2dp_source_restart_session(btif_av_get_addr_by_index(index), ba_addr);
   }
 }
 
 void deinit_audio_hal() {
+  if (!btif_a2dp_source_is_hal_v2_supported()) {
     BTIF_TRACE_DEBUG(" %s if_init = %d ",__func__, btif_a2dp_audio_if_init);
     BTIF_TRACE_DEBUG(" %s split_enabled = %d av_connected = %d",__func__,
                     btif_av_is_split_a2dp_enabled(), btif_av_is_connected());
@@ -4783,6 +4794,16 @@ void deinit_audio_hal() {
       return;
     btif_a2dp_audio_if_init =  false;
     btif_a2dp_audio_interface_deinit();
+  } else {
+    int index = btif_av_get_latest_device_idx_to_start();
+    if(index < btif_max_av_clients) {
+      //restart session BA -> AV switch
+      btif_a2dp_source_restart_session(ba_addr, btif_av_get_addr_by_index(index));
+    } else {
+      //end session BA -> null
+      btif_a2dp_source_end_session(ba_addr);
+    }
+  }
 }
 
 /*******************************************************************************
@@ -4921,8 +4942,8 @@ int btif_av_get_current_playing_dev_idx(void)
       return i;
     }
   }
-
-  return 0;
+  BTIF_TRACE_DEBUG("current playing device not set on any idx");
+  return i;
 }
 
 /******************************************************************************
@@ -4944,7 +4965,7 @@ tBTA_AV_LATENCY btif_av_get_sink_latency() {
     index = btif_av_get_current_playing_dev_idx();
     /* Set sink latency to be latency reported from sink if delay reporting
      * is enabled, or else set sink latency to be default sink latency value */
-    if (btif_av_cb[index].sink_latency > 0)
+    if ((index >= 0 && index < btif_max_av_clients) && btif_av_cb[index].sink_latency > 0)
       sink_latency = btif_av_cb[index].sink_latency;
     else
       sink_latency = BTIF_AV_DEFAULT_SINK_LATENCY;
@@ -5416,6 +5437,9 @@ bool btif_av_is_split_a2dp_enabled() {
   if (!btif_a2dp_source_is_hal_v2_supported()) {
     BTIF_TRACE_DEBUG("btif_av_is_split_a2dp_enabled: %d", bt_split_a2dp_enabled);
     return bt_split_a2dp_enabled;
+  } else if(isBATEnabled()) {
+    BTIF_TRACE_DEBUG("%s:  going for split as BA is active", __func__);
+    return true;
   } else {
     if (!bta_av_co_is_active_peer()) {
       BTIF_TRACE_ERROR("%s:  No active peer codec config found, "
@@ -5703,11 +5727,15 @@ void btif_av_reset_audio_delay(tBTA_AV_HNDL hndl) {
 
 uint16_t btif_av_get_audio_delay(int index) {
   A2dpCodecConfig* current_codec = bta_av_get_a2dp_current_codec();
-  if(current_codec != nullptr) {
-    if(current_codec->codecIndex() == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE) {
-      BTIF_TRACE_WARNING("%s: Updating Aptx Adaptive specific delay: %d",
-            __func__, btif_av_cb[index].codec_latency);
-      return btif_av_cb[index].codec_latency;
+  if (current_codec != nullptr) {
+    if (current_codec->codecIndex() == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE) {
+      if (index >= 0 && index < btif_max_av_clients) {
+        BTIF_TRACE_WARNING("%s: Updating Aptx Adaptive specific delay: %d",
+              __func__, btif_av_cb[index].codec_latency);
+        return btif_av_cb[index].codec_latency;
+      } else {
+        return 0;
+      }
     }
   }
 
@@ -5830,7 +5858,7 @@ bool btif_is_a2dp_sink_handoff_required(int idx) {
   int cur_playing_idx = btif_av_get_current_playing_dev_idx();
   BTIF_TRACE_DEBUG("%s: index = %d, cur_playing_idx= %d",
                           __func__, idx, cur_playing_idx);
-  if (idx != cur_playing_idx) {
+  if (cur_playing_idx != btif_max_av_clients && idx != cur_playing_idx) {
     return true;
   }
   return false;
