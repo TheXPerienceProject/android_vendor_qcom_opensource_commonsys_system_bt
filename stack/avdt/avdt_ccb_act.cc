@@ -186,8 +186,11 @@ void avdt_ccb_hdl_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   p_data->msg.discover_rsp.num_seps = 0;
   char remote_name[BTM_MAX_REM_BD_NAME_LEN] = "";
 
-  AVDT_TRACE_WARNING("%s: total connections: %d, total codecs: %d",
-      __func__, num_conn, num_codecs);
+  char a2dp_role[PROPERTY_VALUE_MAX] = "false";
+  property_get("persist.vendor.service.bt.a2dp.sink", a2dp_role, "false");
+
+  AVDT_TRACE_WARNING("%s: total connections: %d, total codecs: %d, a2dp_role %s",
+      __func__, num_conn, num_codecs,a2dp_role);
 
     /* If this ccb, has done setconf and is doing discover again
      * we should show SEP for which setconfig was done earlier
@@ -259,6 +262,11 @@ void avdt_ccb_hdl_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
               } else {
                 AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
               }
+            if (strcmp(a2dp_role, "false") == 0) {
+              AVDT_TRACE_EVENT("%s: RD not matched for Name and address based WL check or WL disabled, skip AAC advertise\n",
+                      __func__);
+              continue;
+	    }
             }
           }
         }

@@ -156,7 +156,7 @@ const tBTA_AG_AT_CMD bta_ag_hfp_cmd[] = {
     {"+BAC", BTA_AG_AT_BAC_EVT, BTA_AG_AT_SET, BTA_AG_AT_STR, 0, 0},
 #if (TWS_AG_ENABLED == TRUE)
     {"%QMQ", BTA_AG_TWSP_AT_QMQ_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_MIC_QUALITY, TWSPLUS_MAX_MIC_QUALITY},
-    {"%QES", BTA_AG_TWSP_AT_QES_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_EB_STATE_OFF, TWSPLUS_EB_STATE_INEAR},
+    {"%QES", BTA_AG_TWSP_AT_QES_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_EB_STATE_UNKNOWN, TWSPLUS_EB_STATE_INEAR},
     {"%QER", BTA_AG_TWSP_AT_QER_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_EB_ROLE_LEFT, TWSPLUS_EB_ROLE_MONO},
     {"%QBC", BTA_AG_TWSP_AT_QBC_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_BATTERY_CHARGE, TWSPLUS_MAX_BATTERY_CHARGE},
     {"%QMD", BTA_AG_TWSP_AT_QMD_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_MICPATH_DELAY, TWSPLUS_MAX_MICPATH_DELAY/2-1},
@@ -633,6 +633,7 @@ void bta_ag_send_call_inds(tBTA_AG_SCB* p_scb, tBTA_AG_RES result) {
   /* set new call and callsetup values based on BTA_AgResult */
   size_t callsetup = bta_ag_indicator_by_result_code(result);
 
+  bool is_blacklisted = interop_match_addr(INTEROP_DISABLE_SNIFF_DURING_CALL, &p_scb->peer_addr);
   if (result == BTA_AG_END_CALL_RES) {
     call = BTA_AG_CALL_INACTIVE;
   } else if (result == BTA_AG_IN_CALL_CONN_RES ||
@@ -651,6 +652,19 @@ void bta_ag_send_call_inds(tBTA_AG_SCB* p_scb, tBTA_AG_RES result) {
     APPL_TRACE_IMP("%s: BTA_AG_OUT_CALL_CONN_RES, call %x, callsetup %x, call held %x, p_scb->callsetup_ind %x",
      __func__, call, callsetup, p_scb->callheld_ind, p_scb->callsetup_ind );
 
+  if (is_blacklisted) {
+    if (result == BTA_AG_IN_CALL_RES ||
+        result == BTA_AG_CALL_WAIT_RES ||
+        result == BTA_AG_OUT_CALL_ORIG_RES ||
+        result == BTA_AG_OUT_CALL_ALERT_RES ||
+        result == BTA_AG_OUT_CALL_CONN_RES ) {
+        APPL_TRACE_IMP("%s: exit sniff during call for the device: %s",
+                        __func__, p_scb->peer_addr.ToString().c_str());
+        bta_sys_busy(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
+        bta_sys_clear_policy(BTA_ID_AG, HCI_ENABLE_SNIFF_MODE, p_scb->peer_addr);
+     }
+  }
+
 /* if res value equal to BTA_AG_OUT_CALL_CONN_RES when held call is there, always send indicator.
     otherwise, send indicator function tracks if the values have actually changed*/
   if ( (result == BTA_AG_IN_CALL_CONN_RES || result == BTA_AG_OUT_CALL_CONN_RES) &&
@@ -663,6 +677,19 @@ void bta_ag_send_call_inds(tBTA_AG_SCB* p_scb, tBTA_AG_RES result) {
   else
     bta_ag_send_ind(p_scb, BTA_AG_IND_CALL, call, false);
   bta_ag_send_ind(p_scb, BTA_AG_IND_CALLSETUP, callsetup, false);
+
+  if ((result == BTA_AG_END_CALL_RES || result == BTA_AG_CALL_CANCEL_RES) &&
+       p_scb) {
+    APPL_TRACE_IMP("%s: call/call setup ended, cancel xsco collision timer",
+                    __func__);
+    alarm_cancel(p_scb->xsco_conn_collision_timer);
+
+    if (is_blacklisted) {
+       APPL_TRACE_IMP("%s: Enable sniff mode for device: %s",
+                       __func__, p_scb->peer_addr.ToString().c_str());
+       bta_sys_set_policy(BTA_ID_AG, HCI_ENABLE_SNIFF_MODE, p_scb->peer_addr);
+    }
+  }
 }
 
 /*******************************************************************************
@@ -975,7 +1002,14 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
 
     case BTA_AG_AT_BLDN_EVT:
       /* Do not send OK, App will send error or OK depending on
-      ** last dial number enabled or not */
+      ** last dial number enabled or not
+      ** If SLC didn't happen yet, just send ERROR*/
+      if (!p_scb->svc_conn) {
+        event = 0;
+        APPL_TRACE_WARNING("%s: Sending ERROR from stack for BLDN received"\
+                           " before SLC", __func__);
+        bta_ag_send_error(p_scb, BTA_AG_ERR_OP_NOT_SUPPORTED);
+      }
       break;
 
     case BTA_AG_AT_D_EVT:
@@ -1217,7 +1251,12 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
       APPL_TRACE_DEBUG("%s BRSF HF: 0x%x, phone: 0x%x", __func__,
                        p_scb->peer_features, features);
 
-      if (interop_match_addr_or_name(INTEROP_DISABLE_CODEC_NEGOTIATION,
+      if (
+#if (TWS_AG_ENABLED == TRUE)
+          /* Always enable codec negotiation if it is TWS+ */
+          !is_twsp_device(p_scb->peer_addr) &&
+#endif
+      interop_match_addr_or_name(INTEROP_DISABLE_CODEC_NEGOTIATION,
           &p_scb->peer_addr))
       {
           APPL_TRACE_IMP("%s disable codec negotiation for phone, remote" \

@@ -28,7 +28,7 @@
 #include "stack/include/a2dp_codec_api.h"
 #include "stack/include/a2dp_sbc.h"
 #include "stack/include/a2dp_vendor.h"
-#include "bt_vendor_av.h"
+#include "hardware/bt_av.h"
 namespace {
 const uint8_t codec_info_sbc[AVDT_CODEC_SIZE] = {
     6,                   // Length (A2DP_SBC_INFO_LEN)
@@ -173,9 +173,9 @@ const uint8_t codec_info_non_a2dp_dummy[AVDT_CODEC_SIZE] = {
 static const char* APTX_ENCODER_LIB_NAME = "libaptX_encoder.so";
 static const char* APTX_HD_ENCODER_LIB_NAME = "libaptXHD_encoder.so";
 static const char* LDAC_ENCODER_LIB_NAME = "libldacBT_enc.so";
-#if (TWS_ENABLED == TRUE)
+//#if (TWS_ENABLED == TRUE)
 static const char* APTX_TWS_ENCODER_LIB_NAME = "libaptXTWS_encoder.so";
-#endif
+//#endif
 static bool has_shared_library(const char* name) {
   void* lib_handle = dlopen(name, RTLD_NOW);
   if (lib_handle != nullptr) {
@@ -191,18 +191,13 @@ class StackA2dpTest : public ::testing::Test {
  protected:
   StackA2dpTest() {
     // Create the set with all supported codecs
-#if (TWS_ENABLED == TRUE)
-    for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX;
-         i++) {
-#else
     for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_A2DP_CODEC_INDEX_MAX;
          i++) {
-#endif
       btav_a2dp_codec_index_t codec_index =
           static_cast<btav_a2dp_codec_index_t>(i);
 
       bool supported = false;
-      switch (codec_index) {
+      switch ((int)codec_index) {
         case BTAV_A2DP_CODEC_INDEX_SOURCE_SBC:
           supported = true;
           break;
@@ -224,23 +219,17 @@ class StackA2dpTest : public ::testing::Test {
           // shared library installed.
           supported = has_shared_library(LDAC_ENCODER_LIB_NAME);
           break;
-#if (TWS_ENABLED == TRUE)
         case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_TWS:
           // Codec APTX_TWS is supported only if the device has the corresponding
           // shared library installed.
           supported = has_shared_library(APTX_TWS_ENCODER_LIB_NAME);
           break;
-        case BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_SBC:
-          supported = true;
-          break;
-        case BTAV_VENDOR_A2DP_CODEC_INDEX_MAX:
-          break;
-#else
         case BTAV_A2DP_CODEC_INDEX_SINK_SBC:
+        case BTAV_A2DP_CODEC_INDEX_SINK_AAC:
+        case BTAV_A2DP_CODEC_INDEX_SINK_APTX:
           supported = true;
           break;
         case BTAV_A2DP_CODEC_INDEX_MAX:
-#endif
           // Needed to avoid using "default:" case so we can capture when
           // a new codec is added, and it can be included here.
           break;
@@ -332,10 +321,10 @@ TEST_F(StackA2dpTest, test_a2dp_is_codec_valid_sbc) {
 TEST_F(StackA2dpTest, test_a2dp_is_codec_valid_aac) {
   EXPECT_TRUE(A2DP_IsSourceCodecValid(codec_info_aac));
   EXPECT_TRUE(A2DP_IsSourceCodecValid(codec_info_aac_capability));
-  EXPECT_FALSE(A2DP_IsPeerSourceCodecValid(codec_info_aac));
-  EXPECT_FALSE(A2DP_IsPeerSourceCodecValid(codec_info_aac_capability));
+  EXPECT_TRUE(A2DP_IsPeerSourceCodecValid(codec_info_aac));
+  EXPECT_TRUE(A2DP_IsPeerSourceCodecValid(codec_info_aac_capability));
 
-  EXPECT_FALSE(A2DP_IsSinkCodecValid(codec_info_aac_sink_capability));
+  EXPECT_TRUE(A2DP_IsSinkCodecValid(codec_info_aac_sink_capability));
   EXPECT_TRUE(A2DP_IsPeerSinkCodecValid(codec_info_aac_sink_capability));
 
   // Test with invalid AAC codecs
@@ -371,8 +360,11 @@ TEST_F(StackA2dpTest, test_a2dp_is_sink_codec_supported) {
   EXPECT_FALSE(A2DP_IsSinkCodecSupported(codec_info_sbc_capability));
   EXPECT_FALSE(A2DP_IsSinkCodecSupported(codec_info_sbc_sink_capability));
 
-  EXPECT_FALSE(A2DP_IsSinkCodecSupported(codec_info_aac));
-  EXPECT_FALSE(A2DP_IsSinkCodecSupported(codec_info_aac_capability));
+  EXPECT_TRUE(A2DP_IsSinkCodecSupported(codec_info_aac));
+  // NOTE: The test below should be EXPECT_FALSE.
+  // However, codec_info_aac_capability is practically same as codec_info_aac,
+  // therefore we cannot differentiate it as a capability.
+  EXPECT_TRUE(A2DP_IsSinkCodecSupported(codec_info_aac_capability));
   EXPECT_FALSE(A2DP_IsSinkCodecSupported(codec_info_aac_sink_capability));
 
   EXPECT_FALSE(A2DP_IsSinkCodecSupported(codec_info_non_a2dp));
@@ -383,9 +375,9 @@ TEST_F(StackA2dpTest, test_a2dp_is_peer_source_codec_supported) {
   EXPECT_TRUE(A2DP_IsPeerSourceCodecSupported(codec_info_sbc_capability));
   EXPECT_TRUE(A2DP_IsPeerSourceCodecSupported(codec_info_sbc_sink_capability));
 
-  EXPECT_FALSE(A2DP_IsPeerSourceCodecSupported(codec_info_aac));
-  EXPECT_FALSE(A2DP_IsPeerSourceCodecSupported(codec_info_aac_capability));
-  EXPECT_FALSE(A2DP_IsPeerSourceCodecSupported(codec_info_aac_sink_capability));
+  EXPECT_TRUE(A2DP_IsPeerSourceCodecSupported(codec_info_aac));
+  EXPECT_TRUE(A2DP_IsPeerSourceCodecSupported(codec_info_aac_capability));
+  EXPECT_TRUE(A2DP_IsPeerSourceCodecSupported(codec_info_aac_sink_capability));
 
   EXPECT_FALSE(A2DP_IsPeerSourceCodecSupported(codec_info_non_a2dp));
 }
@@ -629,7 +621,7 @@ TEST_F(StackA2dpTest, test_a2dp_get_max_bitpool_sbc) {
 
 TEST_F(StackA2dpTest, test_a2dp_get_sink_track_channel_type) {
   EXPECT_EQ(A2DP_GetSinkTrackChannelType(codec_info_sbc), 3);
-  EXPECT_EQ(A2DP_GetSinkTrackChannelType(codec_info_aac), -1);
+  EXPECT_EQ(A2DP_GetSinkTrackChannelType(codec_info_aac), 3);
   EXPECT_EQ(A2DP_GetSinkTrackChannelType(codec_info_non_a2dp), -1);
 }
 
@@ -772,41 +764,21 @@ TEST_F(StackA2dpTest, test_a2dp_source_codec_index) {
             BTAV_A2DP_CODEC_INDEX_SOURCE_AAC);
   EXPECT_EQ(A2DP_SourceCodecIndex(codec_info_aac_sink_capability),
             BTAV_A2DP_CODEC_INDEX_SOURCE_AAC);
-#if (TWS_ENABLED == TRUE)
-  EXPECT_EQ(A2DP_SourceCodecIndex(codec_info_non_a2dp),
-            BTAV_VENDOR_A2DP_CODEC_INDEX_MAX);
-#else
   EXPECT_EQ(A2DP_SourceCodecIndex(codec_info_non_a2dp),
             BTAV_A2DP_CODEC_INDEX_MAX);
-#endif
 }
 
 TEST_F(StackA2dpTest, test_a2dp_codec_index_str) {
   // Explicit tests for known codecs
   EXPECT_STREQ(A2DP_CodecIndexStr(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC), "SBC");
-#if (TES_ENABLED == TRUE)
-  EXPECT_STREQ(A2DP_CodecIndexStr((btav_a2dp_codec_index_t)
-                         BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_SBC), "SBC SINK");
-#else
   EXPECT_STREQ(A2DP_CodecIndexStr(BTAV_A2DP_CODEC_INDEX_SINK_SBC), "SBC SINK");
-#endif
   EXPECT_STREQ(A2DP_CodecIndexStr(BTAV_A2DP_CODEC_INDEX_SOURCE_AAC), "AAC");
 
   // Test that the unknown codec string has not changed
-#if (TWS_ENABLED == TRUE)
-  EXPECT_STREQ(A2DP_CodecIndexStr((btav_a2dp_codec_index_t)
-                                  BTAV_VENDOR_A2DP_CODEC_INDEX_MAX),
-                                   "UNKNOWN CODEC INDEX");
-#else
   EXPECT_STREQ(A2DP_CodecIndexStr(BTAV_A2DP_CODEC_INDEX_MAX),
                                   "UNKNOWN CODEC INDEX");
-#endif
   // Test that each codec has a known string
-#if (TWS_ENABLED == TRUE)
-  for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX; i++) {
-#else
   for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_A2DP_CODEC_INDEX_MAX; i++) {
-#endif
     btav_a2dp_codec_index_t codec_index =
         static_cast<btav_a2dp_codec_index_t>(i);
     EXPECT_STRNE(A2DP_CodecIndexStr(codec_index), "UNKNOWN CODEC INDEX");
@@ -838,12 +810,7 @@ TEST_F(StackA2dpTest, test_a2dp_init_codec_config) {
   // Test for SBC Sink
   //
   memset(&avdt_cfg, 0, sizeof(avdt_cfg));
-#if (TWS_ENABLED == TRUE)
-  EXPECT_TRUE(A2DP_InitCodecConfig((btav_a2dp_codec_index_t)
-                          BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_SBC, &avdt_cfg));
-#else
   EXPECT_TRUE(A2DP_InitCodecConfig(BTAV_A2DP_CODEC_INDEX_SINK_SBC, &avdt_cfg));
-#endif
   // Compare the result codec with the local test codec info
   for (size_t i = 0; i < codec_info_sbc_sink_capability[0] + 1; i++) {
     EXPECT_EQ(avdt_cfg.codec_info[i], codec_info_sbc_sink_capability[i]);
@@ -869,11 +836,7 @@ TEST_F(StackA2dpTest, test_a2dp_init_codec_config) {
 }
 
 TEST_F(A2dpCodecConfigTest, createCodec) {
-#if (TWS_ENABLED == TRUE)
-  for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX; i++) {
-#else
   for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_A2DP_CODEC_INDEX_MAX; i++) {
-#endif
     btav_a2dp_codec_index_t codec_index =
         static_cast<btav_a2dp_codec_index_t>(i);
 
@@ -904,11 +867,7 @@ TEST_F(A2dpCodecConfigTest, setCodecConfig) {
   // Create the codec capability - SBC
   memset(codec_info_result, 0, sizeof(codec_info_result));
   peer_codec_index = A2DP_SourceCodecIndex(codec_info_sbc_sink_capability);
-#if (TWS_ENABLED == TRUE)
-  EXPECT_NE(peer_codec_index, BTAV_VENDOR_A2DP_CODEC_INDEX_MAX);
-#else
   EXPECT_NE(peer_codec_index, BTAV_A2DP_CODEC_INDEX_MAX);
-#endif
   codec_config =
       a2dp_codecs->findSourceCodecConfig(codec_info_sbc_sink_capability);
   EXPECT_NE(codec_config, nullptr);
@@ -925,11 +884,7 @@ TEST_F(A2dpCodecConfigTest, setCodecConfig) {
   // Create the codec capability - AAC
   memset(codec_info_result, 0, sizeof(codec_info_result));
   peer_codec_index = A2DP_SourceCodecIndex(codec_info_aac_sink_capability);
-#if (TWS_ENABLED == TRUE)
-  EXPECT_NE(peer_codec_index, BTAV_VENDOR_A2DP_CODEC_INDEX_MAX);
-#else
   EXPECT_NE(peer_codec_index, BTAV_A2DP_CODEC_INDEX_MAX);
-#endif
   codec_config =
       a2dp_codecs->findSourceCodecConfig(codec_info_aac_sink_capability);
   EXPECT_NE(codec_config, nullptr);
@@ -946,11 +901,7 @@ TEST_F(A2dpCodecConfigTest, setCodecConfig) {
   // Create the codec config - SBC
   memset(codec_info_result, 0, sizeof(codec_info_result));
   peer_codec_index = A2DP_SourceCodecIndex(codec_info_sbc);
-#if (TWS_ENABLED == TRUE)
-  EXPECT_NE(peer_codec_index, BTAV_VENDOR_A2DP_CODEC_INDEX_MAX);
-#else
   EXPECT_NE(peer_codec_index, BTAV_A2DP_CODEC_INDEX_MAX);
-#endif
   codec_config = a2dp_codecs->findSourceCodecConfig(codec_info_sbc);
   EXPECT_NE(codec_config, nullptr);
   EXPECT_TRUE(a2dp_codecs->setCodecConfig(
@@ -966,11 +917,7 @@ TEST_F(A2dpCodecConfigTest, setCodecConfig) {
   // Create the codec config - AAC
   memset(codec_info_result, 0, sizeof(codec_info_result));
   peer_codec_index = A2DP_SourceCodecIndex(codec_info_aac);
-#if (TWS_ENABLED == TRUE)
-  EXPECT_NE(peer_codec_index, BTAV_VENDOR_A2DP_CODEC_INDEX_MAX);
-#else
   EXPECT_NE(peer_codec_index, BTAV_A2DP_CODEC_INDEX_MAX);
-#endif
   codec_config = a2dp_codecs->findSourceCodecConfig(codec_info_aac);
   EXPECT_NE(codec_config, nullptr);
   EXPECT_TRUE(a2dp_codecs->setCodecConfig(

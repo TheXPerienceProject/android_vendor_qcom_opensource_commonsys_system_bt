@@ -74,11 +74,11 @@
 #include "osi/include/properties.h"
 #include "device/include/interop.h"
 #include "device/include/controller.h"
-#include "bt_vendor_av.h"
 #include "btif/include/btif_storage.h"
 #include <hardware/bt_gatt.h>
 #include "btif/include/btif_a2dp_source.h"
 #include "device/include/device_iot_config.h"
+#include "include/hardware/bt_av.h"
 
 #define MAX_2MBPS_AVDTP_MTU 663
 extern const btgatt_interface_t* btif_gatt_get_interface();
@@ -114,16 +114,8 @@ typedef struct {
 typedef struct {
   RawAddress addr; /* address of audio/video peer */
   tBTA_AV_CO_SINK
-#if (TWS_ENABLED == TRUE)
-      sinks[BTAV_VENDOR_A2DP_CODEC_INDEX_MAX]; /* array of supported sinks */
-#else
       sinks[BTAV_A2DP_CODEC_INDEX_MAX]; /* array of supported sinks */
-#endif
-#if (TWS_ENABLED == TRUE)
-  tBTA_AV_CO_SINK srcs[BTAV_VENDOR_A2DP_CODEC_INDEX_MAX]; /* array of supported srcs */
-#else
   tBTA_AV_CO_SINK srcs[BTAV_A2DP_CODEC_INDEX_MAX]; /* array of supported srcs */
-#endif
   uint8_t num_sinks;     /* total number of sinks at peer */
   uint8_t num_srcs;      /* total number of srcs at peer */
   uint8_t num_seps;      /* total number of seids at peer */
@@ -208,7 +200,7 @@ static bool bta_av_co_set_codec_ota_config(tBTA_AV_CO_PEER* p_peer,
 /* externs */
 extern int btif_max_av_clients;
 extern tBTA_AV_HNDL btif_av_get_reconfig_dev_hndl();
-extern void btif_av_reset_codec_reconfig_flag();
+extern void btif_av_reset_codec_reconfig_flag(RawAddress address);
 extern bool bt_split_a2dp_enabled;
 /*******************************************************************************
  **
@@ -720,7 +712,7 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
 
     if (t_local_sep == AVDT_TSEP_SNK) {
       APPL_TRACE_DEBUG("%s: peer is A2DP SRC", __func__);
-      codec_config_supported = A2DP_IsSinkCodecSupported(p_codec_info);
+      codec_config_supported = A2DP_IsPeerSourceCodecSupported(p_codec_info);
       if (codec_config_supported) {
         // If Peer is SRC, and our config subset matches with what is
         // requested by peer, then just accept what peer wants.
@@ -1081,13 +1073,24 @@ static const tBTA_AV_CO_SINK* bta_av_co_find_peer_src_supports_codec(
     const tBTA_AV_CO_PEER* p_peer) {
   APPL_TRACE_DEBUG("%s: peer num_sup_srcs = %d", __func__,
                    p_peer->num_sup_srcs);
+  // Select Peer Source supported codec as per local Sink order
+  for (const auto& iter :  p_peer->codecs->orderedSinkCodecs()) {
+      APPL_TRACE_DEBUG("%s: trying codec %s", __func__, iter->name().c_str());
+      for (size_t index = 0; index < p_peer->num_sup_srcs; index++) {
+        const uint8_t* p_codec_caps = p_peer->srcs[index].codec_caps;
+        btav_a2dp_codec_index_t peer_codec_index =
+                A2DP_SinkCodecIndex(p_peer->srcs[index].codec_caps);
 
-  for (size_t index = 0; index < p_peer->num_sup_srcs; index++) {
-    const uint8_t* p_codec_caps = p_peer->srcs[index].codec_caps;
-    if (A2DP_CodecTypeEquals(bta_av_co_cb.codec_config, p_codec_caps) &&
-        A2DP_IsPeerSourceCodecSupported(p_codec_caps)) {
-      return &p_peer->srcs[index];
-    }
+        APPL_TRACE_DEBUG("%s ind: %d, peer_codec_index : %d :: codec_config.codecIndex() : %d",
+               __func__, index, peer_codec_index, iter->codecIndex());
+
+        if (peer_codec_index != iter->codecIndex()) {
+          continue;
+        }
+        if (A2DP_IsPeerSourceCodecSupported(p_codec_caps)) {
+          return &p_peer->srcs[index];
+        }
+      }
   }
   return NULL;
 }
@@ -1113,6 +1116,12 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
   for (const auto& iter : p_peer->codecs->orderedSourceCodecs()) {
     APPL_TRACE_DEBUG("%s: updating selectable codec %s", __func__,
                      iter->name().c_str());
+#if (TWS_ENABLED == TRUE)
+    if ((!strcmp(iter->name().c_str(),"aptX-TWS")) && !BTM_SecIsTwsPlusDev(p_peer->addr)) {
+        APPL_TRACE_DEBUG("%s:Non-TWS+ device, skip update selectable aptX-TWS codec",__func__);
+        continue;
+    }
+#endif
     bta_av_co_audio_update_selectable_codec(*iter, p_peer);
   }
 
@@ -1335,6 +1344,7 @@ void bta_av_co_get_peer_params(tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params) {
   uint16_t min_mtu = 0xFFFF;
   int index = btif_max_av_clients;
   const tBTA_AV_CO_PEER* p_peer;
+  char AAC_frame_ctrl_val[PROPERTY_VALUE_MAX] = {'\0'};
 
   APPL_TRACE_DEBUG("%s", __func__);
   CHECK(p_peer_params != nullptr);
@@ -1355,11 +1365,27 @@ void bta_av_co_get_peer_params(tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params) {
     p_peer = &bta_av_co_cb.peers[index];
     min_mtu = p_peer->mtu;
     if (min_mtu > BTA_AV_MAX_A2DP_MTU)
-        min_mtu = BTA_AV_MAX_A2DP_MTU;
-    if(min_mtu == 0) {
+      min_mtu = BTA_AV_MAX_A2DP_MTU;
+    if (min_mtu == 0) {
       APPL_TRACE_WARNING("%s min_mtu received as 0, updating to: %d",
                                __func__, MAX_2MBPS_AVDTP_MTU);
       min_mtu = MAX_2MBPS_AVDTP_MTU;
+    }
+    bool is_AAC_frame_ctrl_stack_enable = false;
+    osi_property_get("persist.vendor.btstack.aac_frm_ctl.enabled", AAC_frame_ctrl_val, "false");
+    if (!strcmp(AAC_frame_ctrl_val, "true"))
+      is_AAC_frame_ctrl_stack_enable = true;
+    APPL_TRACE_DEBUG("%s: Stack AAC frame control enabled: %d", __func__, is_AAC_frame_ctrl_stack_enable);
+    if (is_AAC_frame_ctrl_stack_enable && btif_av_is_peer_edr() &&
+                               (btif_av_peer_supports_3mbps() == FALSE)) {
+      // This condition would be satisfied only if the remote device is
+      // EDR and supports only 2 Mbps, but the effective AVDTP MTU size
+      // exceeds the 2DH5 packet size.
+      APPL_TRACE_DEBUG("%s The remote devce is EDR but does not support 3Mbps", __func__);
+      if (min_mtu > MAX_2MBPS_AVDTP_MTU) {
+        min_mtu = MAX_2MBPS_AVDTP_MTU;
+        APPL_TRACE_WARNING("%s Restricting AVDTP MTU size to %d", __func__, min_mtu);
+      }
     }
     APPL_TRACE_DEBUG("%s updating peer MTU to %d for index %d",
                                     __func__, min_mtu, index);
@@ -1441,11 +1467,7 @@ bool bta_av_co_set_codec_user_config(
   }
 
   // Find the peer SEP codec to use
-#if (TWS_ENABLED == TRUE)
-  if (codec_user_config.codec_type < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX) {
-#else
   if (codec_user_config.codec_type < BTAV_A2DP_CODEC_INDEX_MAX) {
-#endif
     for (size_t index = 0; index < p_peer->num_sup_sinks; index++) {
       btav_a2dp_codec_index_t peer_codec_index =
           A2DP_SourceCodecIndex(p_peer->sinks[index].codec_caps);
@@ -1535,7 +1557,7 @@ done:
   }
   if (!success || !restart_output) {
     APPL_TRACE_DEBUG("%s:reseting codec reconfig flag",__func__);
-    btif_av_reset_codec_reconfig_flag();
+    btif_av_reset_codec_reconfig_flag(bt_addr);
   }
   return success;
 }
@@ -1572,11 +1594,7 @@ static bool bta_av_co_set_codec_ota_config(tBTA_AV_CO_PEER* p_peer,
   // Find the peer SEP codec to use
   btav_a2dp_codec_index_t ota_codec_index =
       A2DP_SourceCodecIndex(p_ota_codec_config);
-#if (TWS_ENABLED == TRUE)
-  if (ota_codec_index == BTAV_VENDOR_A2DP_CODEC_INDEX_MAX) {
-#else
   if (ota_codec_index == BTAV_A2DP_CODEC_INDEX_MAX) {
-#endif
     APPL_TRACE_WARNING("%s: invalid peer codec config", __func__);
     return false;
   }

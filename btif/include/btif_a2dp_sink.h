@@ -57,6 +57,9 @@ uint32_t get_audiotrack_latency();
 // Get the audio channel count for the A2DP Sink module.
 tA2DP_CHANNEL_COUNT btif_a2dp_sink_get_channel_count(void);
 
+// Get codec type set for A2DP streaming
+uint8_t btif_a2dp_sink_get_codec_type(void);
+
 // Update the decoder for the A2DP Sink module.
 // |p_codec_info| contains the new codec information.
 void btif_a2dp_sink_update_decoder(const uint8_t* p_codec_info);

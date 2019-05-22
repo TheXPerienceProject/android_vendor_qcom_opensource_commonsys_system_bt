@@ -45,19 +45,25 @@
  * Returns          void
  *
  ******************************************************************************/
-static void btm_gen_resolve_paddr_cmpl(tSMP_ENC* p) {
+static void btm_gen_resolve_paddr_cmpl(tSMP_ENC* p, BT_OCTET8 rand) {
   tBTM_LE_RANDOM_CB* p_cb = &btm_cb.ble_ctr_cb.addr_mgnt_cb;
+  bool status = false;
+  RawAddress bda;
   BTM_TRACE_EVENT("btm_gen_resolve_paddr_cmpl");
 
   if (p) {
-    /* set hash to be LSB of rpAddress */
-    p_cb->private_addr.address[5] = p->param_buf[0];
-    p_cb->private_addr.address[4] = p->param_buf[1];
-    p_cb->private_addr.address[3] = p->param_buf[2];
+    bda.address[5] = p->param_buf[0];
+    bda.address[4] = p->param_buf[1];
+    bda.address[3] = p->param_buf[2];
+    bda.address[2] = rand[0];
+    bda.address[1] = rand[1];
+    bda.address[0] = rand[2];
     /* set it to controller */
-    btm_ble_set_random_address(p_cb->private_addr);
-
-    p_cb->own_addr_type = BLE_ADDR_RANDOM;
+    status = btm_ble_set_random_address(bda);
+    if(status) {
+      p_cb->private_addr = bda;
+      p_cb->own_addr_type = BLE_ADDR_RANDOM;
+    }
 
     /* start a periodical timer to refresh random addr */
     period_ms_t interval_ms = BTM_BLE_PRIVATE_ADDR_INT_MS;
@@ -82,23 +88,18 @@ static void btm_gen_resolve_paddr_cmpl(tSMP_ENC* p) {
  *
  ******************************************************************************/
 void btm_gen_resolve_paddr_low(BT_OCTET8 rand) {
-  tBTM_LE_RANDOM_CB* p_cb = &btm_cb.ble_ctr_cb.addr_mgnt_cb;
   tSMP_ENC output;
 
   BTM_TRACE_EVENT("btm_gen_resolve_paddr_low");
   rand[2] &= (~BLE_RESOLVE_ADDR_MASK);
   rand[2] |= BLE_RESOLVE_ADDR_MSB;
 
-  p_cb->private_addr.address[2] = rand[0];
-  p_cb->private_addr.address[1] = rand[1];
-  p_cb->private_addr.address[0] = rand[2];
-
   /* encrypt with ur IRK */
   if (!SMP_Encrypt(btm_cb.devcb.id_keys.irk, BT_OCTET16_LEN, rand, 3,
                    &output)) {
-    btm_gen_resolve_paddr_cmpl(NULL);
+    btm_gen_resolve_paddr_cmpl(NULL, rand);
   } else {
-    btm_gen_resolve_paddr_cmpl(&output);
+    btm_gen_resolve_paddr_cmpl(&output, rand);
   }
 }
 /*******************************************************************************

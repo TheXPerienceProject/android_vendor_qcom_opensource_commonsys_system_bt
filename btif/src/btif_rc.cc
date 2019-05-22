@@ -470,7 +470,6 @@ extern bool btif_av_is_split_a2dp_enabled();
 extern int btif_av_idx_by_bdaddr(RawAddress *bd_addr);
 extern bool btif_av_check_flag_remote_suspend(int index);
 extern bt_status_t btif_hf_check_if_sco_connected();
-extern void btif_av_update_current_playing_device(int index);
 extern fixed_queue_t* btu_general_alarm_queue;
 extern void btif_av_set_earbud_state(const RawAddress& bd_addr, uint8_t tws_earbud_state);
 extern void btif_av_set_earbud_role(const RawAddress& bd_addr, uint8_t tws_earbud_role);
@@ -1107,11 +1106,6 @@ void handle_rc_passthrough_cmd(tBTA_AV_REMOTE_CMD* p_remote_cmd) {
   /* Multicast: Passthru command on AVRCP only device when connected
    * to other A2DP devices, ignore it.
    */
-  if (btif_av_is_connected() &&
-      !btif_av_is_device_connected(p_dev->rc_addr)) {
-    BTIF_TRACE_ERROR("Passthrough on AVRCP only device: Ignore..");
-    return;
-  }
 
   /* Trigger DUAL Handoff when support single streaming */
   if (btif_av_is_playing() &&
@@ -1149,16 +1143,11 @@ void handle_rc_passthrough_cmd(tBTA_AV_REMOTE_CMD* p_remote_cmd) {
       APPL_TRACE_WARNING("Passthrough on the playing device");
     } else {
       BTIF_TRACE_DEBUG("Passthrough command on other device");
-        if (btif_av_is_device_connected(p_dev->rc_addr)) {
           /* Trigger suspend on currently playing device
            * Allow the Play to be sent to Music player to
            * address Play during Pause(Local/DUT initiated)
            * but SUSPEND not triggered by Audio module.
            */
-        } else {
-          APPL_TRACE_WARNING("%s(): Command Invalid on", __func__);
-          return;
-        }
     }
   }
 
@@ -1170,7 +1159,7 @@ skip:
 
   /* If AVRC is open and peer sends PLAY but there is no AVDT, then we queue-up
    * this PLAY */
-  if ((p_remote_cmd->rc_id == BTA_AV_RC_PLAY) && (!btif_av_is_connected())) {
+  if ((p_remote_cmd->rc_id == BTA_AV_RC_PLAY) && (!btif_av_is_device_connected(p_dev->rc_addr))) {
     APPL_TRACE_WARNING("%s: AVDT not open, queuing the PLAY command",
                        __func__);
     p_dev->rc_pending_play = true;
@@ -3253,7 +3242,7 @@ static bt_status_t register_notification_rsp(
 static bt_status_t get_folder_items_list_rsp(RawAddress* bd_addr,
                                              btrc_status_t rsp_status,
                                              uint16_t uid_counter,
-                                             uint8_t num_items,
+                                             uint16_t num_items,
                                              btrc_folder_items_t* p_items) {
   tAVRC_RESPONSE avrc_rsp;
   tAVRC_ITEM item;
@@ -6754,7 +6743,17 @@ static bt_status_t is_device_active_in_handoff(RawAddress *bd_addr) {
   av_addr = btif_av_get_addr_by_index(av_index);
   BTIF_TRACE_DEBUG("%s: Current AV Device Index: %d and address: %s:",
                        __func__, av_index, av_addr.ToString().c_str());
-
+#if (TWS_ENABLED == TRUE)
+  if (btif_av_current_device_is_tws()) {
+    if (btif_av_is_tws_enabled_for_dev(p_dev->rc_addr)) {
+      BTIF_TRACE_ERROR("%s:TWS+ device is streaming device",__func__);
+      return BT_STATUS_SUCCESS;
+    } else {
+      BTIF_TRACE_ERROR("%s:legacy device not active",__func__);
+      return BT_STATUS_FAIL;
+    }
+  }
+#endif
   if (connected_devices < btif_max_rc_clients) {
     if (!btif_av_is_device_connected(*bd_addr)) {
        BTIF_TRACE_ERROR("%s: AV is not connected for the device", __func__);

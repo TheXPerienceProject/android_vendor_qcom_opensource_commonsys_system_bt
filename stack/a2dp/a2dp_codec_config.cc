@@ -69,10 +69,10 @@
 #include "a2dp_vendor_ldac.h"
 #include "osi/include/log.h"
 #include "a2dp_vendor_aptx_tws.h"
-#include "bt_vendor_av.h"
 #include "device/include/controller.h"
 #include "btif_av_co.h"
 #include "device/include/device_iot_config.h"
+#include <hardware/bt_av.h>
 
 /* The Media Type offset within the codec info byte array */
 #define A2DP_MEDIA_TYPE_OFFSET 1
@@ -153,15 +153,11 @@ A2dpCodecConfig* A2dpCodecConfig::createCodec(
   LOG_DEBUG(LOG_TAG, "%s: codec %s", __func__, A2DP_CodecIndexStr(codec_index));
 
   A2dpCodecConfig* codec_config = nullptr;
-  switch (codec_index) {
+  switch ((int)codec_index) {
     case BTAV_A2DP_CODEC_INDEX_SOURCE_SBC:
       codec_config = new A2dpCodecConfigSbc(codec_priority);
       break;
-#if (TWS_ENABLED == TRUE)
-    case BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_SBC:
-#else
     case BTAV_A2DP_CODEC_INDEX_SINK_SBC:
-#endif
       codec_config = new A2dpCodecConfigSbcSink(codec_priority);
       break;
     case BTAV_A2DP_CODEC_INDEX_SOURCE_AAC:
@@ -179,15 +175,18 @@ A2dpCodecConfig* A2dpCodecConfig::createCodec(
     case BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC:
       codec_config = new A2dpCodecConfigLdac(codec_priority);
       break;
-#if (TWS_ENABLED == TRUE)
     case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_TWS:
       codec_config = new A2dpCodecConfigAptxTWS(codec_priority);
       break;
+    case BTAV_A2DP_CODEC_INDEX_SINK_AAC:
+      codec_config = new A2dpCodecConfigAacSink(codec_priority);
+      break;
+    case BTAV_A2DP_CODEC_INDEX_SINK_APTX:
+      codec_config = new A2dpCodecConfigAptxSink(codec_priority);
+      break;
+
     // Add a switch statement for each vendor-specific codec
-    case BTAV_VENDOR_A2DP_CODEC_INDEX_MAX:
-#else
     case BTAV_A2DP_CODEC_INDEX_MAX:
-#endif
       break;
     default:
       break;
@@ -376,12 +375,8 @@ bool A2dpCodecConfig::setCodecUserConfig(
 
 bool A2dpCodecConfig::codecConfigIsValid(
     const btav_a2dp_codec_config_t& codec_config) {
-  return
-#if (TWS_ENABLED == TRUE)
-        (codec_config.codec_type < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX) &&
-#else
+  return 
         (codec_config.codec_type < BTAV_A2DP_CODEC_INDEX_MAX) &&
-#endif
          (codec_config.sample_rate != BTAV_A2DP_CODEC_SAMPLE_RATE_NONE) &&
          (codec_config.bits_per_sample !=
           BTAV_A2DP_CODEC_BITS_PER_SAMPLE_NONE) &&
@@ -557,11 +552,7 @@ A2dpCodecs::~A2dpCodecs() {
 bool A2dpCodecs::init(bool isMulticastEnabled, bool isShoEnabled) {
   LOG_DEBUG(LOG_TAG, "%s", __func__);
   std::lock_guard<std::recursive_mutex> lock(codec_mutex_);
-#if (TWS_ENABLED == TRUE)
-  for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX; i++) {
-#else
   for (int i = BTAV_A2DP_CODEC_INDEX_MIN; i < BTAV_A2DP_CODEC_INDEX_MAX; i++) {
-#endif
     btav_a2dp_codec_index_t codec_index =
         static_cast<btav_a2dp_codec_index_t>(i);
 
@@ -596,11 +587,7 @@ bool A2dpCodecs::init(bool isMulticastEnabled, bool isShoEnabled) {
     }
 
     indexed_codecs_.insert(std::make_pair(codec_index, codec_config));
-#if (TWS_ENABLED == TRUE)
-    if (codec_index < BTAV_VENDOR_A2DP_CODEC_INDEX_SOURCE_MAX) {
-#else
     if (codec_index < BTAV_A2DP_CODEC_INDEX_SOURCE_MAX) {
-#endif
       ordered_source_codecs_.push_back(codec_config);
       ordered_source_codecs_.sort(compare_codec_priority);
     } else {
@@ -633,11 +620,7 @@ A2dpCodecConfig* A2dpCodecs::findSourceCodecConfig(
     const uint8_t* p_codec_info) {
   std::lock_guard<std::recursive_mutex> lock(codec_mutex_);
   btav_a2dp_codec_index_t codec_index = A2DP_SourceCodecIndex(p_codec_info);
-#if (TWS_ENABLED == TRUE)
-  if (codec_index == BTAV_VENDOR_A2DP_CODEC_INDEX_MAX) return nullptr;
-#else
   if (codec_index == BTAV_A2DP_CODEC_INDEX_MAX) return nullptr;
-#endif
 
   auto iter = indexed_codecs_.find(codec_index);
   if (iter == indexed_codecs_.end()) return nullptr;
@@ -678,11 +661,7 @@ bool A2dpCodecs::setCodecUserConfig(
 
   LOG_DEBUG(LOG_TAG, "%s: configuring codec_user_config: ", __func__);
   print_codec_parameters(codec_user_config);
-#if (TWS_ENABLED == TRUE)
-  if (codec_user_config.codec_type < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX) {
-#else
   if (codec_user_config.codec_type < BTAV_A2DP_CODEC_INDEX_MAX) {
-#endif
     auto iter = indexed_codecs_.find(codec_user_config.codec_type);
     if (iter == indexed_codecs_.end()) goto fail;
     a2dp_codec_config = iter->second;
@@ -817,11 +796,7 @@ bool A2dpCodecs::setCodecOtaConfig(
   // by user configuration. If yes, then the OTA codec configuration is
   // ignored.
   codec_type = A2DP_SourceCodecIndex(p_ota_codec_config);
-#if (TWS_ENABLED == TRUE)
-  if (codec_type == BTAV_VENDOR_A2DP_CODEC_INDEX_MAX) {
-#else
   if (codec_type == BTAV_A2DP_CODEC_INDEX_MAX) {
-#endif
     LOG_WARN(LOG_TAG,
              "%s: ignoring peer OTA codec configuration: "
              "invalid codec",
@@ -973,6 +948,7 @@ int A2DP_IotGetPeerSinkCodecType(const uint8_t* p_codec_info) {
 #endif
 
 tA2DP_CODEC_TYPE A2DP_GetCodecType(const uint8_t* p_codec_info) {
+  LOG_DEBUG(LOG_TAG, "%s: ", __func__);
   return (tA2DP_CODEC_TYPE)(p_codec_info[AVDT_CODEC_TYPE_INDEX]);
 }
 
@@ -1428,22 +1404,35 @@ btav_a2dp_codec_index_t A2DP_SourceCodecIndex(const uint8_t* p_codec_info) {
   }
 
   LOG_ERROR(LOG_TAG, "%s: unsupported codec type 0x%x", __func__, codec_type);
-#if (TWS_ENABLED == TRUE)
-  return (btav_a2dp_codec_index_t)BTAV_VENDOR_A2DP_CODEC_INDEX_MAX;
-#else
   return BTAV_A2DP_CODEC_INDEX_MAX;
-#endif
+}
+
+btav_a2dp_codec_index_t A2DP_SinkCodecIndex(const uint8_t* p_codec_info) {
+  tA2DP_CODEC_TYPE codec_type = A2DP_GetCodecType(p_codec_info);
+
+  LOG_VERBOSE(LOG_TAG, "%s: codec_type = 0x%x", __func__, codec_type);
+
+  switch (codec_type) {
+    case A2DP_MEDIA_CT_SBC:
+      return A2DP_SinkCodecIndexSbc(p_codec_info);
+    case A2DP_MEDIA_CT_AAC:
+      return A2DP_SinkCodecIndexAac(p_codec_info);
+    case A2DP_MEDIA_CT_NON_A2DP:
+      return A2DP_VendorSinkCodecIndexAptx(p_codec_info);
+    default:
+      break;
+  }
+   LOG_ERROR(LOG_TAG, "%s: unsupported codec type 0x%x", __func__, codec_type);
+  return BTAV_A2DP_CODEC_INDEX_MAX;
 }
 
 const char* A2DP_CodecIndexStr(btav_a2dp_codec_index_t codec_index) {
-  switch (codec_index) {
+  switch ((int)codec_index) {
     case BTAV_A2DP_CODEC_INDEX_SOURCE_SBC:
       return A2DP_CodecIndexStrSbc();
-#if (TWS_ENABLED == TRUE)
-    case (btav_a2dp_codec_index_t)BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_SBC:
-#else
+    case BTAV_A2DP_CODEC_INDEX_SINK_AAC:
+      return A2DP_CodecIndexStrAacSink();
     case BTAV_A2DP_CODEC_INDEX_SINK_SBC:
-#endif
       return A2DP_CodecIndexStrSbcSink();
     case BTAV_A2DP_CODEC_INDEX_SOURCE_AAC:
       return A2DP_CodecIndexStrAac();
@@ -1451,11 +1440,7 @@ const char* A2DP_CodecIndexStr(btav_a2dp_codec_index_t codec_index) {
       break;
   }
 
-#if (TWS_ENABLED == TRUE)
-  if (codec_index < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX)
-#else
   if (codec_index < BTAV_A2DP_CODEC_INDEX_MAX)
-#endif
     return A2DP_VendorCodecIndexStr(codec_index);
 
   return "UNKNOWN CODEC INDEX";
@@ -1470,14 +1455,12 @@ bool A2DP_InitCodecConfig(btav_a2dp_codec_index_t codec_index,
   p_cfg->num_protect = 0;
   p_cfg->protect_info[0] = 0;
 
-  switch (codec_index) {
+  switch ((int)codec_index) {
     case BTAV_A2DP_CODEC_INDEX_SOURCE_SBC:
       return A2DP_InitCodecConfigSbc(p_cfg);
-#if (TWS_ENABLED == TRUE)
-    case BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_SBC:
-#else
+    case BTAV_A2DP_CODEC_INDEX_SINK_AAC:
+      return A2DP_InitCodecConfigAacSink(p_cfg);
     case BTAV_A2DP_CODEC_INDEX_SINK_SBC:
-#endif
       return A2DP_InitCodecConfigSbcSink(p_cfg);
     case BTAV_A2DP_CODEC_INDEX_SOURCE_AAC:
       return A2DP_InitCodecConfigAac(p_cfg);
@@ -1485,11 +1468,7 @@ bool A2DP_InitCodecConfig(btav_a2dp_codec_index_t codec_index,
       break;
   }
 
-#if (TWS_ENABLED == TRUE)
-  if (codec_index < BTAV_VENDOR_A2DP_CODEC_INDEX_MAX)
-#else
   if (codec_index < BTAV_A2DP_CODEC_INDEX_MAX)
-#endif
     return A2DP_VendorInitCodecConfig(codec_index, p_cfg);
 
   return false;
@@ -1573,7 +1552,7 @@ bool A2DP_Is44p1kFreqSupported() {
 bool A2DP_IsCodecEnabledInOffload(btav_a2dp_codec_index_t codec_index) {
   bool codec_status = false;
   if (offload_capability) {
-    switch (codec_index) {
+    switch ((int)codec_index) {
     case BTAV_A2DP_CODEC_INDEX_SOURCE_SBC:
       codec_status = sbc_offload;
       break;
@@ -1594,28 +1573,20 @@ bool A2DP_IsCodecEnabledInOffload(btav_a2dp_codec_index_t codec_index) {
           LOG_INFO(LOG_TAG,"LDAC not enabled in offload currently");
       codec_status = ldac_offload;
       break;
-#if (TWS_ENABLED == TRUE)
     case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_TWS:
       codec_status = aptxtws_offload;
       break;
-    case BTAV_VENDOR_A2DP_CODEC_INDEX_SOURCE_MAX:
-    case BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_MAX:
-#else
+    case BTAV_A2DP_CODEC_INDEX_SINK_AAC:
+    case BTAV_A2DP_CODEC_INDEX_SINK_APTX:
     case BTAV_A2DP_CODEC_INDEX_SOURCE_MAX:
     case BTAV_A2DP_CODEC_INDEX_SINK_MAX:
-#endif
     default:
       break;
     }
   } else {
     if (codec_index != BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC &&
-#if (TWS_ENABLED == TRUE)
-      codec_index != BTAV_VENDOR_A2DP_CODEC_INDEX_SINK_MAX &&
-      codec_index != BTAV_VENDOR_A2DP_CODEC_INDEX_SOURCE_MAX
-#else
       codec_index != BTAV_A2DP_CODEC_INDEX_SINK_MAX &&
       codec_index != BTAV_A2DP_CODEC_INDEX_SOURCE_MAX
-#endif
     )
       LOG_INFO(LOG_TAG,"SplitA2dp enabled, but offload capability not set");
       return true;
@@ -1626,7 +1597,7 @@ bool A2DP_IsCodecEnabledInOffload(btav_a2dp_codec_index_t codec_index) {
 bool A2DP_DumpCodecInfo(const uint8_t* p_codec_info) {
   tA2DP_CODEC_TYPE codec_type = A2DP_GetCodecType(p_codec_info);
 
-  LOG_VERBOSE(LOG_TAG, "%s: codec_type = 0x%x", __func__, codec_type);
+  LOG_DEBUG(LOG_TAG, "%s: codec_type = 0x%x", __func__, codec_type);
 
   switch (codec_type) {
     case A2DP_MEDIA_CT_SBC:
