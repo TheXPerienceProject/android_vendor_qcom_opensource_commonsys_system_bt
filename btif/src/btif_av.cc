@@ -3649,7 +3649,6 @@ static bt_status_t init_src(
 #endif /* ENABLE_SPLIT_A2DP */
 
   osi_property_get("persist.vendor.btstack.twsplus.defaultchannelmode", value, "mono");
-#endif /* ENABLE_SPLIT_A2DP */
   BTIF_TRACE_DEBUG("tws default channel mode = %s",value);
   tws_defaultmono_supported = (strcmp(value, "mono") == 0);
   BTIF_TRACE_DEBUG("default mono channel mode = %d",tws_defaultmono_supported);
