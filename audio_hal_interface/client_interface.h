@@ -71,7 +71,7 @@ inline BluetoothAudioStatus BluetoothAudioCtrlAckToHalStatus(
     case BluetoothAudioCtrlAck::FAILURE_BUSY:
       return BluetoothAudioStatus::CALL_IN_PROGRESS;
     case BluetoothAudioCtrlAck::FAILURE_DISCONNECTING:
-      return BluetoothAudioStatus::FAILURE;
+      return BluetoothAudioStatus::FAILURE_DISC_IN_PROGRESS;
     case BluetoothAudioCtrlAck::FAILURE_LONG_WAIT:
       return BluetoothAudioStatus::LW_ERROR;
     default:
@@ -157,6 +157,8 @@ class BluetoothAudioClientInterface {
   void updateSessionParams(const SessionParams& sessionParams);
 
   void StreamSuspended(const BluetoothAudioCtrlAck& ack);
+
+  void UpdateDeathHandlerThread(thread_t* message_loop);
 
   int EndSession();
 
