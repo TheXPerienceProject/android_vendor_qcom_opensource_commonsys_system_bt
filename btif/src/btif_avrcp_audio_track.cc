@@ -37,6 +37,8 @@ FILE* outputPcmSampleFile;
 char outputFilename[50] = "/data/misc/bluedroid/output_sample.pcm";
 #endif
 
+std::mutex g_audioTrack_mutex;
+
 #define COMPRESSED_AUDIO_BUFFER_SIZE 2048
 
 void* BtifAvrcpAudioTrackCreate(int trackFreq, int channelType, int codec_type) {
@@ -44,6 +46,7 @@ void* BtifAvrcpAudioTrackCreate(int trackFreq, int channelType, int codec_type) 
               __func__, trackFreq, channelType, codec_type);
   audio_format_t media_format = (audio_format_t)0;
   sp<android::AudioTrack> track = NULL;
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
 
   if (codec_type == A2DP_MEDIA_CT_SBC) {
       track = new android::AudioTrack(
@@ -100,6 +103,7 @@ int BtifAvrcpAudioTrackLatency(void* handle) {
     LOG_ERROR(LOG_TAG, "%s: handle is null!", __func__);
     return 0;
   }
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
   BtifAvrcpAudioTrack* trackHolder = static_cast<BtifAvrcpAudioTrack*>(handle);
   CHECK(trackHolder != NULL);
   CHECK(trackHolder->track != NULL);
@@ -112,6 +116,7 @@ void BtifAvrcpAudioTrackStart(void* handle) {
     LOG_ERROR(LOG_TAG, "%s: handle is null!", __func__);
     return;
   }
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
   BtifAvrcpAudioTrack* trackHolder = static_cast<BtifAvrcpAudioTrack*>(handle);
   CHECK(trackHolder != NULL);
   CHECK(trackHolder->track != NULL);
@@ -124,6 +129,7 @@ void BtifAvrcpAudioTrackStop(void* handle) {
     LOG_DEBUG(LOG_TAG, "%s handle is null.", __func__);
     return;
   }
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
   BtifAvrcpAudioTrack* trackHolder = static_cast<BtifAvrcpAudioTrack*>(handle);
   if (trackHolder != NULL && trackHolder->track != NULL) {
     LOG_DEBUG(LOG_TAG, "%s Track.cpp: btStopTrack", __func__);
@@ -136,6 +142,7 @@ void BtifAvrcpAudioTrackDelete(void* handle) {
     LOG_DEBUG(LOG_TAG, "%s handle is null.", __func__);
     return;
   }
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
   BtifAvrcpAudioTrack* trackHolder = static_cast<BtifAvrcpAudioTrack*>(handle);
   if (trackHolder != NULL && trackHolder->track != NULL) {
     LOG_DEBUG(LOG_TAG, "%s Track.cpp: btDeleteTrack", __func__);
@@ -155,6 +162,7 @@ void BtifAvrcpAudioTrackPause(void* handle) {
     LOG_DEBUG(LOG_TAG, "%s handle is null.", __func__);
     return;
   }
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
   BtifAvrcpAudioTrack* trackHolder = static_cast<BtifAvrcpAudioTrack*>(handle);
   if (trackHolder != NULL && trackHolder->track != NULL) {
     LOG_DEBUG(LOG_TAG, "%s Track.cpp: btPauseTrack", __func__);
@@ -168,6 +176,7 @@ void BtifAvrcpSetAudioTrackGain(void* handle, float gain) {
     LOG_DEBUG(LOG_TAG, "%s handle is null.", __func__);
     return;
   }
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
   BtifAvrcpAudioTrack* trackHolder = static_cast<BtifAvrcpAudioTrack*>(handle);
   if (trackHolder != NULL && trackHolder->track != NULL) {
     LOG_DEBUG(LOG_TAG, "%s set gain %f", __func__, gain);
@@ -181,6 +190,7 @@ int BtifAvrcpAudioTrackWriteData(void* handle, void* audioBuffer,
   CHECK(trackHolder != NULL);
   CHECK(trackHolder->track != NULL);
   int retval = -1;
+  std::lock_guard<std::mutex> lock(g_audioTrack_mutex);
 #if (DUMP_PCM_DATA == TRUE)
   if (outputPcmSampleFile) {
     fwrite((audioBuffer), 1, (size_t)bufferlen, outputPcmSampleFile);
