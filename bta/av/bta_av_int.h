@@ -781,6 +781,7 @@ extern bool bta_av_is_scb_init(tBTA_AV_SCB* p_scb);
 extern void bta_av_set_scb_sst_incoming(tBTA_AV_SCB* p_scb);
 extern tBTA_AV_LCB* bta_av_find_lcb(const RawAddress& addr, uint8_t op);
 extern bool bta_av_is_multicast_enabled();
+extern tBTA_AV_SCB* bta_av_addr_to_scb(const RawAddress& bd_addr);
 
 /* main functions */
 extern void bta_av_api_deregister(tBTA_AV_DATA* p_data);

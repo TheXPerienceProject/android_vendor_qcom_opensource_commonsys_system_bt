@@ -2391,9 +2391,9 @@ void bta_av_rc_closed(tBTA_AV_DATA* p_data) {
       rc_close.rc_handle = i;
       p_rcb->status &= ~BTA_AV_RC_CONN_MASK;
       p_rcb->peer_features = 0;
-      if(p_rcb->browse_open)
+      if(p_rcb->browse_open && (p_rcb->peer_features & BTA_AV_FEAT_BROWSE))
         browse_support = true;
-      APPL_TRACE_DEBUG("       shdl:%d, lidx:%d", p_rcb->shdl, p_rcb->lidx);
+      APPL_TRACE_DEBUG("shdl:%d, lidx:%d", p_rcb->shdl, p_rcb->lidx);
       if (p_rcb->shdl) {
         if ((p_rcb->shdl - 1) < BTA_AV_NUM_STRS) {
           p_scb = bta_av_cb.p_scb[p_rcb->shdl - 1];
@@ -2694,4 +2694,31 @@ void bta_av_dereg_comp(tBTA_AV_DATA* p_data) {
 static void bta_av_browsing_channel_open_retry(uint8_t handle) {
   APPL_TRACE_IMP("%s Retry Browse connection", __func__);
   AVRC_OpenBrowse(handle, AVCT_INT);
+}
+
+/*******************************************************************************
+ *
+ * Function         bta_av_refresh_accept_signalling_timer
+ *
+ * Description      Refresh accept_signalling_timer
+ *
+ * Returns          void
+ *
+ ******************************************************************************/
+void bta_av_refresh_accept_signalling_timer(const RawAddress &remote_bdaddr) {
+  tBTA_AV_SCB* p_scb = NULL;
+  p_scb = bta_av_addr_to_scb(remote_bdaddr);
+  if (p_scb == NULL) {
+    APPL_TRACE_IMP("%s: p_scb is null, return", __func__);
+    return;
+  }
+  APPL_TRACE_IMP("%s: add: %s hdi = %d", __func__,
+                           remote_bdaddr.ToString().c_str(), p_scb->hdi);
+  if (alarm_is_scheduled(bta_av_cb.accept_signalling_timer[p_scb->hdi])) {
+    APPL_TRACE_IMP("%s:accept_signalling_timer is scheduled on p_scb->hdi: %d"
+                     " cancel it, and restart", __func__, p_scb->hdi);
+    alarm_set_on_mloop(bta_av_cb.accept_signalling_timer[p_scb->hdi],
+              bta_sink_time_out(), bta_av_accept_signalling_timer_cback,
+              UINT_TO_PTR(p_scb->hdi));
+  }
 }
