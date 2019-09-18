@@ -81,6 +81,7 @@
 #include "include/hardware/bt_av.h"
 
 #define MAX_2MBPS_AVDTP_MTU 663
+#define A2DP_LDAC_CODEC_BEST_SAMPLE_RATE 96000
 extern const btgatt_interface_t* btif_gatt_get_interface();
 
 bool isDevUiReq = false;
@@ -614,6 +615,7 @@ tA2DP_STATUS bta_av_co_audio_getconfig(tBTA_AV_HNDL hndl, uint8_t* p_codec_info,
       BTA_AvReconfig(hndl, true, p_sink->sep_info_idx, p_peer->codec_config,
                      *p_num_protect, bta_av_co_cp_scmst);
       p_peer->rcfg_done = true;
+      p_peer->reconfig_needed = false;
     }
     if (p_peer->getcap_pending) {
       APPL_TRACE_DEBUG("%s: send event BTIF_MEDIA_SOURCE_ENCODER_USER_CONFIG_UPDATE to update",
@@ -652,6 +654,7 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
   tA2DP_STATUS status = A2DP_SUCCESS;
   uint8_t category = A2DP_SUCCESS;
   bool reconfig_needed = false;
+  char value[PROPERTY_VALUE_MAX] = "false";
 
   std::string addrstr = addr.ToString();
   const char* bd_addr_str = addrstr.c_str();
@@ -753,7 +756,16 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
     bta_av_ci_setconfig(hndl, status, category, 0, NULL, false, avdt_handle);
     return;
   }
-
+  property_get("persist.vendor.bt.a2dp.ldac_96k_support", value, "false");
+  if (!strncmp("true", value, 4)) {
+    btav_a2dp_codec_index_t ota_codec_index =
+        A2DP_SourceCodecIndex(p_codec_info);
+    if (p_peer->isIncoming && ota_codec_index == BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC
+        && (A2DP_GetTrackSampleRate(p_codec_info) != A2DP_LDAC_CODEC_BEST_SAMPLE_RATE)) {
+      APPL_TRACE_DEBUG("%s: Selected codec is LDAC and reconfig is needed", __func__);
+      reconfig_needed = true;
+    }
+  }
   /* Mark that this is an acceptor peer */
   p_peer->acp = true;
   p_peer->reconfig_needed = reconfig_needed;
@@ -1181,28 +1193,31 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
 
     if (p_sink != NULL) {
       APPL_TRACE_DEBUG("%s: selected codec %s", __func__, iter->name().c_str());
-      if (p_peer->isIncoming) {
-        btav_a2dp_codec_index_t current_peer_codec_index = A2DP_SourceCodecIndex(p_peer->codec_config);
-        APPL_TRACE_DEBUG("%s: current_peer_codec_index: %d, isIncoming: %d",
-                            __func__, current_peer_codec_index, p_peer->isIncoming);
-        if (current_peer_codec_index != p_peer->codecIndextoCompare) {
-          p_peer->reconfig_needed = true;
-          p_peer->isIncoming = false;
-          APPL_TRACE_DEBUG("%s: incoming codec Idx mismatched with outgoing codec Idx: %d",
-                               __func__, p_peer->reconfig_needed);
+      if ((p_peer->num_rx_sinks != p_peer->num_sinks) &&
+          (p_peer->num_sup_sinks != BTA_AV_CO_NUM_ELEMENTS(p_peer->sinks))) {
+        APPL_TRACE_DEBUG("%s: GetCap did not complete, avoid sending codec config updated evt", __func__);
+      } else {
+        if (p_peer->isIncoming) {
+          btav_a2dp_codec_index_t current_peer_codec_index = A2DP_SourceCodecIndex(p_peer->codec_config);
+          APPL_TRACE_DEBUG("%s: current_peer_codec_index: %d, isIncoming: %d",
+                              __func__, current_peer_codec_index, p_peer->isIncoming);
+          if (current_peer_codec_index != p_peer->codecIndextoCompare) {
+            p_peer->reconfig_needed = true;
+            p_peer->isIncoming = false;
+            APPL_TRACE_DEBUG("%s: incoming codec Idx mismatched with outgoing codec Idx: %d",
+                                 __func__, p_peer->reconfig_needed);
+          }
         }
+        // NOTE: Conditionally dispatch the event to make sure a callback with
+        // the most recent codec info is generated.
+        btif_dispatch_sm_event(BTIF_AV_SOURCE_CONFIG_UPDATED_EVT, (void *)p_peer->addr.address,
+                         sizeof(RawAddress));
       }
       break;
     }
     APPL_TRACE_DEBUG("%s: cannot use codec %s", __func__, iter->name().c_str());
   }
-
-  // NOTE: Unconditionally dispatch the event to make sure a callback with
-  // the most recent codec info is generated.
-  btif_dispatch_sm_event(BTIF_AV_SOURCE_CONFIG_UPDATED_EVT, (void *)p_peer->addr.address,
-                   sizeof(RawAddress));
   APPL_TRACE_DEBUG("%s BDA:%s", __func__, p_peer->addr.ToString().c_str());
-
   return p_sink;
 }
 
@@ -1560,6 +1575,7 @@ bool bta_av_co_set_codec_user_config(
     BTA_AvReconfig(p_peer->handle, true, p_sink->sep_info_idx,
                    p_peer->codec_config, num_protect, bta_av_co_cp_scmst);
     p_peer->rcfg_done = true;
+    p_peer->reconfig_needed = false;
   }
 
 done:
@@ -1718,6 +1734,7 @@ bool bta_av_co_set_codec_audio_config(
       BTA_AvReconfig(p_peer->handle, true, p_sink->sep_info_idx,
                      p_peer->codec_config, num_protect, bta_av_co_cp_scmst);
       p_peer->rcfg_done = true;
+      p_peer->reconfig_needed = false;
     }
   }
 

@@ -448,15 +448,19 @@ const char* dump_av_sm_event_name(btif_av_sm_event_t event) {
  * Returns          void
  *
  ******************************************************************************/
-static void btif_initiate_av_open_timer_timeout(UNUSED_ATTR void* data) {
+static void btif_initiate_av_open_timer_timeout(void* data) {
   RawAddress peer_addr;
   btif_av_connect_req_t connect_req;
+  RawAddress *bd_add = (RawAddress *)data;
+  BTIF_TRACE_DEBUG("%s: bd_add: %s", __func__, bd_add->ToString().c_str());
 
   memset(&connect_req, 0, sizeof(btif_av_connect_req_t));
   /* is there at least one RC connection - There should be */
   if (btif_rc_get_connected_peer(&peer_addr)) {
+    BTIF_TRACE_DEBUG("%s: peer_addr: %s", __func__, peer_addr.ToString().c_str());
     /* Check if this peer_addr is same as currently connected AV*/
-    if (btif_get_conn_state_of_device(peer_addr) == BTIF_AV_STATE_OPENED) {
+    if ((*bd_add == peer_addr) &&
+        (btif_get_conn_state_of_device(peer_addr) == BTIF_AV_STATE_OPENED)) {
       BTIF_TRACE_DEBUG("AV is already connected");
     } else {
       uint8_t rc_handle;
@@ -465,8 +469,8 @@ static void btif_initiate_av_open_timer_timeout(UNUSED_ATTR void* data) {
        * If not available, AV got connected to different devices.
        * Disconnect this RC connection without AV connection.
        */
-      rc_handle = btif_rc_get_connected_peer_handle(peer_addr);
-      index = btif_av_get_valid_idx_for_rc_events(peer_addr, rc_handle);
+      rc_handle = btif_rc_get_connected_peer_handle(*bd_add);
+      index = btif_av_get_valid_idx_for_rc_events(*bd_add, rc_handle);
       if (index >= btif_max_av_clients) {
           BTIF_TRACE_ERROR("%s No slot free for AV connection, back off",
                             __func__);
@@ -474,7 +478,7 @@ static void btif_initiate_av_open_timer_timeout(UNUSED_ATTR void* data) {
       }
       BTIF_TRACE_DEBUG("%s Issuing connect to the remote RC peer", __func__);
     /* In case of AVRCP connection request, we will initiate SRC connection */
-    connect_req.target_bda = &peer_addr;
+    connect_req.target_bda = bd_add;
     if (bt_av_sink_callbacks != NULL)
       connect_req.uuid = UUID_SERVCLASS_AUDIO_SINK;
     else if (bt_av_src_callbacks != NULL)
@@ -1228,7 +1232,8 @@ static bool btif_av_state_opening_handler(btif_sm_event_t event, void* p_data,
     } break;
 
     case BTIF_AV_SOURCE_CONFIG_REQ_EVT:
-      btif_av_cache_src_codec_config(BTIF_AV_SOURCE_CONFIG_REQ_EVT, p_data, index);
+      if(codec_cfg_change)
+        btif_av_cache_src_codec_config(BTIF_AV_SOURCE_CONFIG_REQ_EVT, p_data, index);
       break;
 
     case BTIF_AV_SOURCE_CONFIG_UPDATED_EVT:
@@ -1726,7 +1731,7 @@ static bool btif_av_state_opened_handler(btif_sm_event_t event, void* p_data,
     } break;
 
     case BTIF_AV_SOURCE_CONFIG_REQ_EVT: {
-      if (btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) {
+      if ((btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) && codec_cfg_change) {
         btif_av_cache_src_codec_config(BTIF_AV_SOURCE_CONFIG_REQ_EVT, p_data, index);
       } else {
         btif_av_cb[index].reconfig_event = 0;
@@ -2081,7 +2086,7 @@ static bool btif_av_state_started_handler(btif_sm_event_t event, void* p_data,
     case BTIF_AV_SOURCE_CONFIG_REQ_EVT:
       btif_av_cb[index].reconfig_pending = true;
       btif_av_flow_spec_cmd(index, reconfig_a2dp_param_val);
-      if (btif_av_cb[index].flags & BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING) {
+      if ((btif_av_cb[index].flags & BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING) && codec_cfg_change) {
         btif_av_cache_src_codec_config(BTIF_AV_SOURCE_CONFIG_REQ_EVT, p_data, index);
       } else {
         btif_av_cb[index].reconfig_event = 0;
@@ -3872,6 +3877,18 @@ void btif_av_trigger_dual_handoff(bool handoff, int current_active_index, int pr
     BTIF_TRACE_ERROR("Handoff on invalid index");
     return;
   } else if ((previous_active_index != btif_max_av_clients) && (previous_active_index != INVALID_INDEX)){
+    if (btif_av_current_device_is_tws()) {
+      int tws_index;
+      tws_index = btif_av_get_tws_pair_idx(previous_active_index);
+      if (tws_index != btif_max_av_clients &&
+        btif_sm_get_state(btif_av_cb[previous_active_index].sm_handle) != BTIF_AV_STATE_STARTED) {
+        if (btif_sm_get_state(btif_av_cb[tws_index].sm_handle) == BTIF_AV_STATE_STARTED) {
+          BTIF_TRACE_DEBUG("%s:Chaning previous_active_index from %d to %d",__func__,
+                            previous_active_index, tws_index);
+          previous_active_index = tws_index;
+        }
+      }
+    }
     if(btif_sm_get_state(btif_av_cb[previous_active_index].sm_handle) == BTIF_AV_STATE_STARTED) {
       BTIF_TRACE_DEBUG("Initiate SUSPEND for this device on index = %d", previous_active_index);
       btif_av_cb[previous_active_index].dual_handoff = handoff; /*Initiate Handoff*/
@@ -4187,6 +4204,12 @@ static void cleanup_sink(void) {
 static void allow_connection(int is_valid, RawAddress *bd_addr)
 {
   int index = 0;
+
+  if (*bd_addr == RawAddress::kEmpty) {
+    BTIF_TRACE_ERROR("%s: bd_address is empty, return", __func__);
+    return;
+  }
+
   BTIF_TRACE_DEBUG(" %s() isValid is %d event %d", __func__,is_valid,idle_rc_event);
   switch (idle_rc_event) {
     case BTA_AV_RC_OPEN_EVT:
@@ -4194,7 +4217,7 @@ static void allow_connection(int is_valid, RawAddress *bd_addr)
         BTIF_TRACE_DEBUG("allowconn for RC connection");
         alarm_set_on_mloop(av_open_on_rc_timer,
                            BTIF_TIMEOUT_AV_OPEN_ON_RC_MS,
-                           btif_initiate_av_open_timer_timeout, NULL);
+                           btif_initiate_av_open_timer_timeout, bd_addr);
           btif_rc_handler(idle_rc_event, (tBTA_AV*)&idle_rc_data);
       } else {
         uint8_t rc_handle =  idle_rc_data.rc_open.rc_handle;
@@ -4559,11 +4582,6 @@ bt_status_t btif_av_execute_service(bool b_enable) {
     }
     BTA_AvUpdateMaxAVClient(btif_max_av_clients);
   } else {
-    if (btif_av_is_playing()) {
-        BTIF_TRACE_DEBUG("Reset codec before BT ShutsDown");
-        RawAddress dummy_bda = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
-        btif_report_source_codec_state(NULL, &dummy_bda);
-    }
     /* Also shut down the AV state machine */
     for (i = 0; i < btif_max_av_clients; i++ ) {
       if (btif_av_cb[i].sm_handle != NULL) {
