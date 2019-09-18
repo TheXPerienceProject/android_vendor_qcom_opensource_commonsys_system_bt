@@ -102,7 +102,6 @@ cc_library_static {
         "liblog",
         "libz",
         "libtinyxml2",
-        "com.qualcomm.qti.bluetooth_audio@1.0",
         "vendor.qti.hardware.bluetooth_audio@2.0",
         "libhidlbase",
         "libhidltransport",
