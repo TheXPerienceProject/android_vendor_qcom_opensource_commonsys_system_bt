@@ -609,6 +609,7 @@ static void btif_update_source_codec(void* p_data) {
       codec_config = current_codec->getCodecConfig();
       if(codec_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE) {
         int index = btif_max_av_clients;
+        int tws_index = btif_max_av_clients;
         uint16_t encoder_mode = req->codec_config.codec_specific_4 & APTX_MODE_MASK;
 
         if (btif_av_stream_started_ready())
@@ -618,21 +619,37 @@ static void btif_update_source_codec(void* p_data) {
 
         if(index >= btif_max_av_clients) return;
 
+        if(btif_av_cb[index].tws_device) {
+          tws_index = btif_av_get_tws_pair_idx(index);
+        }
+
         if(encoder_mode == APTX_HQ) {
           btif_av_cb[index].aptx_mode = APTX_HQ;
           btif_av_cb[index].codec_latency = APTX_HQ_LATENCY;
+          if(tws_index < btif_max_av_clients) {
+            btif_av_cb[tws_index].aptx_mode = APTX_HQ;
+            btif_av_cb[tws_index].codec_latency = APTX_HQ_LATENCY;
+          }
           btif_a2dp_update_sink_latency_change();
           BTIF_TRACE_DEBUG("%s: Aptx Adaptive mode = %d, codec_latency = %d", __func__,
                         btif_av_cb[index].aptx_mode, btif_av_cb[index].codec_latency);
         } else if (encoder_mode == APTX_LL) {
           btif_av_cb[index].aptx_mode = APTX_LL;
           btif_av_cb[index].codec_latency = APTX_LL_LATENCY;
+          if(tws_index < btif_max_av_clients) {
+            btif_av_cb[tws_index].aptx_mode = APTX_LL;
+            btif_av_cb[tws_index].codec_latency = APTX_LL_LATENCY;
+          }
           btif_a2dp_update_sink_latency_change();
           BTIF_TRACE_DEBUG("%s: Aptx Adaptive mode = %d, codec_latency = %d", __func__,
                         btif_av_cb[index].aptx_mode, btif_av_cb[index].codec_latency);
         } else if (encoder_mode == APTX_ULL) {
           btif_av_cb[index].aptx_mode = APTX_ULL;
           btif_av_cb[index].codec_latency = APTX_ULL_LATENCY;
+          if(tws_index < btif_max_av_clients) {
+            btif_av_cb[tws_index].aptx_mode = APTX_ULL;
+            btif_av_cb[tws_index].codec_latency = APTX_ULL_LATENCY;
+          }
           btif_a2dp_update_sink_latency_change();
           BTIF_TRACE_DEBUG("%s: Aptx Adaptive mode = %d, codec_latency = %d", __func__,
                         btif_av_cb[index].aptx_mode, btif_av_cb[index].codec_latency);
@@ -1276,6 +1293,14 @@ static bool btif_av_state_opening_handler(btif_sm_event_t event, void* p_data,
 #if (TWS_ENABLED == TRUE)
         BTIF_TRACE_DEBUG("is tws_device = %d",p_bta_data->open.tws_device);
         btif_av_cb[index].tws_device = p_bta_data->open.tws_device;
+        if (btif_av_cb[index].tws_device) {
+          int idx = btif_av_get_tws_pair_idx(index);
+          if (idx < btif_max_av_clients) {
+            btif_av_cb[index].aptx_mode = btif_av_cb[idx].aptx_mode;
+            BTIF_TRACE_DEBUG("Updating aptx mode to second connected earbud: %d",
+                          btif_av_cb[index].aptx_mode);
+          }
+        }
 #endif
         if (p_bta_data->open.edr & BTA_AV_EDR_3MBPS) {
           BTIF_TRACE_DEBUG("remote supports 3 mbps");
@@ -1719,8 +1744,10 @@ static bool btif_av_state_opened_handler(btif_sm_event_t event, void* p_data,
         APPL_TRACE_DEBUG("TWS+ device enter opened state");
         for(int i = 0; i < btif_max_av_clients; i++) {
           if (i != index && btif_av_cb[i].tws_device &&
-              (btif_av_cb[i].flags & BTIF_AV_FLAG_PENDING_START)) {
-            APPL_TRACE_DEBUG("The other TWS+ is pending start, sending bta av start");
+              (btif_av_cb[i].flags & BTIF_AV_FLAG_PENDING_START) &&
+              !(btif_av_cb[i].flags & BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING)) {
+            APPL_TRACE_DEBUG("The other TWS+ is pending start, sending bta av start, flags %x",
+                              btif_av_cb[i].flags);
             btif_av_cb[index].flags |= BTIF_AV_FLAG_PENDING_START;
             BTA_AvStart(btif_av_cb[index].bta_handle);
           }
@@ -6415,7 +6442,6 @@ void btif_av_set_offload_status() {
     BTIF_TRACE_IMP("restart with software session");
   }
   reconfig_a2dp = FALSE;
-  btif_media_send_reset_vendor_state();
 }
 
 void btif_av_set_reconfig_flag(tBTA_AV_HNDL bta_handle) {
