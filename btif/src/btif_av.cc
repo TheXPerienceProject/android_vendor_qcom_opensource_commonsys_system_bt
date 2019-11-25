@@ -82,8 +82,14 @@
 #include "btif_bat.h"
 #include "bta/av/bta_av_int.h"
 #include "device/include/device_iot_config.h"
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
 #include "audio_hal_interface/a2dp_encoding.h"
+#endif
 #include "controller.h"
+#if (OFF_TARGET_TEST_ENABLED == TRUE)
+#include "log/log.h"
+#include "service/a2dp_hal_sim/audio_a2dp_hal_stub.h"
+#endif
 
 extern bool isDevUiReq;
 bool isBitRateChange = false;
@@ -5870,9 +5876,10 @@ bool btif_av_is_multicast_supported() {
 }
 
 bool btif_av_check_flag_remote_suspend(int index) {
-  BTIF_TRACE_ERROR("%s(): index = %d",__func__, index);
-  if (index >= btif_max_av_clients || index < 0)
+  if (index >= btif_max_av_clients || index < 0) {
+    BTIF_TRACE_ERROR("%s(): Invalid index = %d",__func__, index);
     return false;
+  }
   if (btif_av_cb[index].flags & BTIF_AV_FLAG_REMOTE_SUSPEND) {
     BTIF_TRACE_DEBUG("remote suspend flag set on index = %d",index);
     return true;
