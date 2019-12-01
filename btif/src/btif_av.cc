@@ -96,6 +96,7 @@ static int reconfig_a2dp_param_val = 0;
 #define BTIF_AVK_SERVICE_NAME "Advanced Audio Sink"
 
 #define BTIF_TIMEOUT_AV_OPEN_ON_RC_MS (2 * 1000)
+#define BTIF_SUSPEND_RSP_FROM_REMOTE_TOUT (2 * 1000)
 
 /* Number of BTIF-AV control blocks */
 /* Now supports Two AV connections. */
@@ -180,6 +181,8 @@ typedef struct {
   btif_sm_event_t reconfig_event;
   tBTA_AV reconfig_data;
   struct alarm_t *remote_start_alarm;
+  struct alarm_t *suspend_rsp_track_timer;
+  bool fake_suspend_rsp;
 } btif_av_cb_t;
 
 typedef struct {
@@ -198,29 +201,19 @@ typedef struct {
   btav_a2dp_codec_config_t codec_config;
 } btif_av_codec_config_req_t;
 
+typedef struct {
+  RawAddress bd_addr;
+  uint8_t conn_retry_count;
+  alarm_t *av_coll_detected_timer;
+} btif_av_collision_detect_t;
+
 /*****************************************************************************
  *  Static variables
  *****************************************************************************/
 static btav_source_callbacks_t* bt_av_src_callbacks = NULL;
 static btav_sink_callbacks_t* bt_av_sink_callbacks = NULL;
-static btif_av_cb_t btif_av_cb[BTIF_AV_NUM_CB] = {
-    { 0, {{0}}, false, 0, 0, 0, 0, std::vector<btav_a2dp_codec_config_t>(), false,
-    false, false, BTIF_AV_STATE_IDLE, BTA_A2DP_SOURCE_SERVICE_ID,
-    false, false, false, 0, false, false
-#if (TWS_ENABLED == TRUE)
-    , false, false
-#endif
-    , false
-    , 0, 0x1000, 0, {0}, NULL,},
-    { 0, {{0}}, false, 0, 0, 0, 0, std::vector<btav_a2dp_codec_config_t>(), false,
-    false, false, BTIF_AV_STATE_IDLE, BTA_A2DP_SOURCE_SERVICE_ID,
-    false, false, false, 0, false, false
-#if (TWS_ENABLED == TRUE)
-    , false, false
-#endif
-    , false
-    , 0, 0x1000, 0, {0}, NULL,},
-};
+static btif_av_cb_t btif_av_cb[BTIF_AV_NUM_CB];
+btif_av_collision_detect_t collision_detect[BTIF_AV_NUM_CB];
 
 static alarm_t* av_open_on_rc_timer = NULL;
 static btif_sm_event_t idle_rc_event;
@@ -229,10 +222,7 @@ int btif_max_av_clients = 1;
 static bool enable_multicast = false;
 static bool is_multicast_supported = false;
 static bool multicast_disabled = false;
-static RawAddress retry_bda;
 static RawAddress codec_bda = {};
-static int conn_retry_count = 1;
-static alarm_t *av_coll_detected_timer = NULL;
 static bool isA2dpSink = false;
 static bool codec_config_update_enabled = false;
 bool is_codec_config_dump = false;
@@ -313,6 +303,7 @@ bool btif_av_current_device_is_tws(void);
 bool btif_av_is_idx_tws_device(int index);
 int btif_av_get_tws_pair_idx(int index);
 bool btif_av_is_tws_enable_monocfg(void);
+bool btif_av_is_tws_pair_remote_started(int index);
 #else
 #define btif_av_is_tws_device_playing() 0
 #define btif_av_is_tws_suspend_triggered() 0
@@ -322,6 +313,7 @@ bool btif_av_is_tws_enable_monocfg(void);
 #define btif_av_is_idx_tws_device() 0
 #define btif_av_get_tws_pair_idx() 0
 #define btif_av_is_tws_enable_monocfg() 0
+#define btif_av_is_tws_pair_remote_started() 0
 #endif
 #ifdef AVK_BACKPORT
 void btif_av_request_audio_focus(bool enable);
@@ -658,34 +650,53 @@ static void btif_report_source_codec_state(UNUSED_ATTR void* p_data,
 }
 
 
-static void btif_av_collission_timer_timeout(UNUSED_ATTR void *data) {
-  RawAddress *target_bda = &retry_bda;
+static void btif_av_collission_timer_timeout(void *data) {
+  int *arg = (int *)data;
+  if (!arg) {
+    BTIF_TRACE_ERROR("%s: index is null, return", __func__);
+    return;
+  }
+
+  int collision_index = *arg;
+  if ((collision_index < 0) && (collision_index >= btif_max_av_clients)) {
+    BTIF_TRACE_ERROR("%s: collision index is not valid, return", __func__);
+    return;
+  }
+
+  RawAddress target_bda = collision_detect[collision_index].bd_addr;
   btif_sm_state_t av_state;
   RawAddress av_address;
+  BTIF_TRACE_DEBUG("%s: collision_index = %d target_bda: %s, conn_retry_count = %d", __func__,
+                      collision_index, target_bda.ToString().c_str(),
+                      collision_detect[collision_index].conn_retry_count);
 
-  if(btif_storage_is_device_bonded(target_bda) != BT_STATUS_SUCCESS){
+  if (btif_storage_is_device_bonded(&target_bda) != BT_STATUS_SUCCESS){
     BTIF_TRACE_IMP("btif_av_collission_timer_timeout: not bonded device ");
+    if (arg) {
+      osi_free(arg);
+    }
     return;
-  }else{
+  } else {
     BTIF_TRACE_IMP("btif_av_collission_timer_timeout: bonded device ");
   }
 
-  av_address = *target_bda;
+  av_address = target_bda;
   av_state = btif_get_conn_state_of_device(av_address);
-  BTIF_TRACE_DEBUG("%s(): AV state: %d", __func__, av_state);
-  BTIF_TRACE_DEBUG("TARGET BD ADDRESS %s", av_address.ToString().c_str());
+  BTIF_TRACE_DEBUG("%s: AV state: %d BD_Addr: %s", __func__,
+                      av_state, av_address.ToString().c_str());
 
-  if (av_state == BTIF_AV_STATE_IDLE && conn_retry_count <= 1) {
+  if (av_state == BTIF_AV_STATE_IDLE &&
+      collision_detect[collision_index].conn_retry_count <= 1) {
     if (bt_av_src_callbacks != NULL) {
       BTIF_TRACE_DEBUG("%s Starting A2dp connection", __FUNCTION__);
-      conn_retry_count++;
-      btif_queue_connect(UUID_SERVCLASS_AUDIO_SOURCE, *target_bda, connect_int,
+      collision_detect[collision_index].conn_retry_count++;
+      btif_queue_connect(UUID_SERVCLASS_AUDIO_SOURCE, target_bda, connect_int,
                     btif_max_av_clients);
     } else {
       BTIF_TRACE_DEBUG("%s Aborting A2dp connection retry", __FUNCTION__);
     }
-  } else if (btif_rc_get_connected_peer_handle(av_address) == BTRC_HANDLE_NONE
-            && conn_retry_count <= 1) {
+  } else if (btif_rc_get_connected_peer_handle(av_address) == BTRC_HANDLE_NONE &&
+             collision_detect[collision_index].conn_retry_count <= 1) {
     tBTA_AV_HNDL handle;
     int idx = btif_av_idx_by_bdaddr(&av_address);
     if (idx == btif_max_av_clients) {
@@ -697,36 +708,83 @@ static void btif_av_collission_timer_timeout(UNUSED_ATTR void *data) {
     BTIF_TRACE_DEBUG("%s Starting Avrcp connection for handle: %d", __FUNCTION__, handle);
     if ((handle != (tBTA_AV_HNDL)INVALID_INDEX) && (bt_av_src_callbacks != NULL)) {
       BTA_AvOpenRc(handle);
-      conn_retry_count++;
+      collision_detect[collision_index].conn_retry_count++;
     } else {
       BTIF_TRACE_DEBUG("%s Aborting Avrcp connection retry", __FUNCTION__);
     }
   } else {
-    if (conn_retry_count > 1) {
-      conn_retry_count = 1;
-      BTIF_TRACE_DEBUG("%s Connection Retry count exceeded", __FUNCTION__);
+    if (collision_detect[collision_index].conn_retry_count > 1) {
+      collision_detect[collision_index].conn_retry_count = 1;
+      BTIF_TRACE_DEBUG("%s Connection Retry count exceeded for : %s",
+                       __FUNCTION__, collision_detect[collision_index].bd_addr.ToString().c_str());
+      memset(&collision_detect[collision_index].bd_addr, 0, sizeof(RawAddress));
+      if (arg) {
+        osi_free(arg);
+      }
       return;
     }
     BTIF_TRACE_DEBUG("%s A2dp already connected", __FUNCTION__);
     BTIF_TRACE_DEBUG("%s Avrcp already connected on handle: %d", __FUNCTION__,
                    btif_rc_get_connected_peer_handle(av_address));
   }
+
+  if (arg) {
+    osi_free(arg);
+  }
 }
 
 static void btif_av_check_and_start_collission_timer(int index) {
-  retry_bda = btif_av_cb[index].peer_bda;
+  int coll_i = 0;
+  int *arg = NULL;
+  arg = (int *) osi_malloc(sizeof(int));
+  RawAddress target_bda = btif_av_get_addr_by_index(index);
+  BTIF_TRACE_DEBUG("%s: index: %d ", __func__, index);
 
-  BTIF_TRACE_DEBUG("%s(), index: %d ", __func__, index);
-
-  if (alarm_is_scheduled(av_coll_detected_timer)) {
-    alarm_cancel(av_coll_detected_timer);
-    BTIF_TRACE_DEBUG("btif_av_check_and_start_collission_timer:Deleting previously queued timer");
+  //check for free index, to start timer
+  for (coll_i = 0; coll_i < btif_max_av_clients; coll_i++) {
+    if (alarm_is_scheduled(collision_detect[coll_i].av_coll_detected_timer)) {
+      BTIF_TRACE_DEBUG("%s: collision alram is already scheduled on coll_i = %d,"
+                       " coll_add: %s", __func__, coll_i,
+                       collision_detect[coll_i].bd_addr.ToString().c_str());
+      //When 2nd time collision timer started for target_bda as part of
+      //conn_retry_count, in the middile of timer processconnectotherprofiles has
+      //been triggered and connection has been initiated for the same bda.
+      //If it fails, then once again timer has been going to start on the same
+      //target_bda, by checking on the freed collision index. So, already due to
+      //2nd time collision, timer already running on the same target_bda, it is going
+      //to allocate one more collision index for the same bda and start the other
+      //collision timer. So effectively 2 timers will run for the same bda with
+      //different collision indices. So to avoid this, below check is needed.
+      if (collision_detect[coll_i].bd_addr == target_bda) {
+        BTIF_TRACE_DEBUG("%s: collision alram is already scheduled on target_bda = %s,"
+                             "no need to fetch new collision index to start timer.",
+                          __func__, target_bda.ToString().c_str());
+        if (arg) {
+          osi_free(arg);
+        }
+        break;
+      }
+      continue;
+    } else {
+      collision_detect[coll_i].bd_addr = target_bda;
+      *arg = coll_i;
+      /* Start collision detected timeout */
+      BTIF_TRACE_DEBUG("%s: schedule collision alram on coll_i = %d, bd_add: %s",
+                __func__, coll_i, collision_detect[coll_i].bd_addr.ToString().c_str());
+      alarm_set_on_mloop(collision_detect[coll_i].av_coll_detected_timer,
+                          BTIF_TIMEOUT_AV_COLL_DETECTED_MS_2,
+                          btif_av_collission_timer_timeout,
+                          (void *)arg);
+      break;
+    }
   }
-  /* Start collision detected timeout */
-  alarm_set_on_mloop(av_coll_detected_timer,
-             BTIF_TIMEOUT_AV_COLL_DETECTED_MS_2,
-             btif_av_collission_timer_timeout,
-             NULL);
+  if (coll_i >= btif_max_av_clients) {
+    if (arg) {
+      osi_free(arg);
+    }
+    BTIF_TRACE_DEBUG("%s: All collision indices are full, no coll_i has been allocated, "
+                      "for target_bda: %s",__func__, target_bda.ToString().c_str());
+  }
 }
 
 static void btif_av_cache_src_codec_config(btif_sm_event_t event, void* p_data, int index) {
@@ -785,6 +843,11 @@ static bool btif_av_state_idle_handler(btif_sm_event_t event, void* p_data, int 
       btif_av_cb[index].codec_latency = 0;
       btif_av_cb[index].reconfig_event = 0;
       memset(&btif_av_cb[index].reconfig_data, 0, sizeof(tBTA_AV));
+      if (alarm_is_scheduled(btif_av_cb[index].suspend_rsp_track_timer)) {
+        BTIF_TRACE_DEBUG("%s: clear suspend_rsp_track_timer", __func__);
+        alarm_cancel(btif_av_cb[index].suspend_rsp_track_timer);
+      }
+      btif_av_cb[index].fake_suspend_rsp = false;
       for (int i = 0; i < btif_max_av_clients; i++)
         btif_av_cb[i].dual_handoff = false;
       osi_property_get("persist.vendor.service.bt.a2dp.sink", a2dp_role, "false");
@@ -1131,6 +1194,20 @@ static bool btif_av_state_opening_handler(btif_sm_event_t event, void* p_data,
       if (p_bta_data->open.status == BTA_AV_SUCCESS) {
         state = BTAV_CONNECTION_STATE_CONNECTED;
         av_state = BTIF_AV_STATE_OPENED;
+        RawAddress target_bda = btif_av_get_addr_by_index(index);
+        for (int i = 0; i < btif_max_av_clients; i++) {
+          if (target_bda == collision_detect[i].bd_addr) {
+            BTIF_TRACE_DEBUG("%s: Collision and Target add are matched.", __func__);
+            collision_detect[i].conn_retry_count = 1;
+            if (alarm_is_scheduled(collision_detect[i].av_coll_detected_timer)) {
+               alarm_cancel(collision_detect[i].av_coll_detected_timer);
+               BTIF_TRACE_DEBUG("%s: clear av_coll_detected_timer on i = %d and add = %s",
+                       __func__, i, collision_detect[i].bd_addr.ToString().c_str());
+            }
+            memset(&collision_detect[i].bd_addr, 0, sizeof(RawAddress));
+            break;
+          }
+        }
 /* SPLITA2DP */
         if (btif_a2dp_audio_if_init != true) {
           if (btif_av_is_split_a2dp_enabled()) {
@@ -1553,8 +1630,10 @@ static bool btif_av_state_opened_handler(btif_sm_event_t event, void* p_data,
         APPL_TRACE_DEBUG("TWS+ device enter opened state");
         for(int i = 0; i < btif_max_av_clients; i++) {
           if (i != index && btif_av_cb[i].tws_device &&
-              (btif_av_cb[i].flags & BTIF_AV_FLAG_PENDING_START)) {
-            APPL_TRACE_DEBUG("The other TWS+ is pending start, sending bta av start");
+              (btif_av_cb[i].flags & BTIF_AV_FLAG_PENDING_START) &&
+              !(btif_av_cb[i].flags & BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING)) {
+            APPL_TRACE_DEBUG("The other TWS+ is pending start, sending bta av start, flags %x",
+                              btif_av_cb[i].flags);
             btif_av_cb[index].flags |= BTIF_AV_FLAG_PENDING_START;
             BTA_AvStart(btif_av_cb[index].bta_handle);
           }
@@ -1647,7 +1726,8 @@ static bool btif_av_state_opened_handler(btif_sm_event_t event, void* p_data,
           if (enable_multicast
 #if (TWS_ENABLED == TRUE)
               || ((btif_av_cb[index].tws_device == true)
-              &&  (btif_av_is_tws_device_playing(index) == true))
+              &&  ((btif_av_is_tws_device_playing(index) == true) &&
+                    btif_av_is_tws_pair_remote_started(index) == false) )
 #endif
           ) {
             /* Stack will start the playback on newly connected
@@ -1924,6 +2004,13 @@ static bool btif_av_state_opened_handler(btif_sm_event_t event, void* p_data,
       if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK) {
         btif_av_cb[index].sink_latency = ((tBTA_AV*)p_data)->delay_rpt.sink_delay;
       }
+      break;
+
+    case BTA_AV_SUSPEND_EVT:
+      btif_av_cb[index].flags &= ~BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING;
+      btif_av_cb[index].fake_suspend_rsp = false;
+      BTIF_TRACE_DEBUG("%s: BTA_AV_SUSPEND_EVT received in opened state for index: %d, ignore.",
+                          __func__, index);
       break;
 
       CHECK_RC_EVENT(event, (tBTA_AV*)p_data);
@@ -2232,8 +2319,18 @@ static bool btif_av_state_started_handler(btif_sm_event_t event, void* p_data,
       break;
 
     case BTA_AV_SUSPEND_EVT:
-      BTIF_TRACE_EVENT("%s: BTA_AV_SUSPEND_EVT status %d, init %d, flag %d", __func__,
-           p_av->suspend.status, p_av->suspend.initiator, btif_av_cb[index].flags);
+      BTIF_TRACE_EVENT("%s: BTA_AV_SUSPEND_EVT: index: %d, status %d, init %d, flag %d,"
+          "pending_cmd: %d, dual_handoff: %d,  fake_suspend_rsp: %d", __func__, index,
+       p_av->suspend.status, p_av->suspend.initiator, btif_av_cb[index].flags, pending_cmd,
+       btif_av_cb[index].dual_handoff, btif_av_cb[index].fake_suspend_rsp);
+
+      if (alarm_is_scheduled(btif_av_cb[index].suspend_rsp_track_timer)) {
+        BTIF_TRACE_DEBUG("%s: BTA_AV_SUSPEND_EVT is received, clear suspend_rsp_track_timer",
+                             __func__);
+        btif_av_cb[index].fake_suspend_rsp = false;
+        alarm_cancel(btif_av_cb[index].suspend_rsp_track_timer);
+      }
+
       // Check if this suspend is due to DUAL_Handoff
       if ((btif_av_cb[index].dual_handoff) &&
           (p_av->suspend.status == BTA_AV_SUCCESS)) {
@@ -2369,7 +2466,8 @@ static bool btif_av_state_started_handler(btif_sm_event_t event, void* p_data,
           }
         }
 
-        btif_av_cb[index].flags &= ~BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING;
+        if (!btif_av_cb[index].fake_suspend_rsp)
+          btif_av_cb[index].flags &= ~BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING;
 
         if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
           // suspend failed, reset back tx flush state
@@ -2382,7 +2480,8 @@ static bool btif_av_state_started_handler(btif_sm_event_t event, void* p_data,
       btif_report_audio_state_to_ba(BTAV_AUDIO_STATE_REMOTE_SUSPEND);
 
       // suspend completed and state changed, clear pending status
-      btif_av_cb[index].flags &= ~BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING;
+      if (!btif_av_cb[index].fake_suspend_rsp)
+        btif_av_cb[index].flags &= ~BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING;
 
       if (btif_av_cb[index].reconfig_event) {
         btif_av_process_cached_src_codec_config(index);
@@ -2902,6 +3001,7 @@ static void btif_av_handle_event(uint16_t event, char* p_param) {
       /* Let the RC handler decide on these passthrough cmds
        * Use rc_handle to get the active AV device and use that mapping.
        */
+    /* FALLTHROUGH */
     case BTA_AV_REMOTE_CMD_EVT:
     case BTA_AV_VENDOR_CMD_EVT:
     case BTA_AV_META_MSG_EVT:
@@ -2909,6 +3009,7 @@ static void btif_av_handle_event(uint16_t event, char* p_param) {
       index = 0;
       BTIF_TRACE_EVENT("RC events: on index = %d", index);
       break;
+
     case BTIF_AV_SETUP_CODEC_REQ_EVT:
       index = btif_av_get_latest_device_idx_to_start();
       break;
@@ -2921,10 +3022,9 @@ static void btif_av_handle_event(uint16_t event, char* p_param) {
       }
       BTIF_TRACE_EVENT("Sink events: BTA_AV_SINK_MEDIA_CFG_EVT on index = %d", index);
       break;
-  /* FALLTHROUGH */
-  default:
-    BTIF_TRACE_ERROR("Unhandled event = %d", event);
-    break;
+    default:
+      BTIF_TRACE_ERROR("Unhandled event = %d", event);
+      break;
   }
   BTIF_TRACE_DEBUG("Handle the AV event = 0x%x on index = %d", event, index);
   if (index >= 0 && index < btif_max_av_clients)
@@ -3647,8 +3747,6 @@ bt_status_t btif_av_init(int service_id) {
   if (btif_av_cb[0].sm_handle == NULL) {
     alarm_free(av_open_on_rc_timer);
     av_open_on_rc_timer = alarm_new("btif_av.av_open_on_rc_timer");
-    alarm_free(av_coll_detected_timer);
-    av_coll_detected_timer = alarm_new("btif_av.av_coll_detected_timer");
     alarm_free(config_alarm);
     config_alarm = alarm_new("btif.a2dp_sink_set_config");
     alarm_free(sink_config_alarm);
@@ -3674,10 +3772,18 @@ bt_status_t btif_av_init(int service_id) {
     }
 
     /* Also initialize the AV state machine */
-    for (int i = 0; i < btif_max_av_clients; i++)
+    for (int i = 0; i < btif_max_av_clients; i++) {
       btif_av_cb[i].sm_handle = btif_sm_init(
-        (const btif_sm_handler_t*)btif_av_state_handlers, BTIF_AV_STATE_IDLE,
-        i);
+        (const btif_sm_handler_t*)btif_av_state_handlers,
+        BTIF_AV_STATE_IDLE, i);
+      btif_av_cb[i].suspend_rsp_track_timer =
+                       alarm_new("btif_av.suspend_rsp_track_timer");
+      alarm_free(collision_detect[i].av_coll_detected_timer);
+      collision_detect[i].av_coll_detected_timer =
+                         alarm_new("btif_av.av_coll_detected_timer");
+      memset(&collision_detect[i].bd_addr, 0, sizeof(RawAddress));
+      collision_detect[i].conn_retry_count = 1;
+    }
 
     btif_transfer_context(btif_av_handle_event, BTIF_AV_INIT_REQ_EVT,
         (char*)&service_id, sizeof(int), NULL);
@@ -3760,6 +3866,19 @@ static bt_status_t init_src( // gghai
     max_connected_audio_devices = BTIF_AV_NUM_CB;
   }
 
+  for (int i = 0; i < max_connected_audio_devices; i++) {
+    memset(&btif_av_cb[i], 0, sizeof(btif_av_cb[i]));
+    btif_av_cb[i].codec_priorities = codec_priorities;
+    btif_av_cb[i].state = BTIF_AV_STATE_IDLE;
+    btif_av_cb[i].service = BTA_A2DP_SOURCE_SERVICE_ID;
+    btif_av_cb[i].aptx_mode = 0X1000;
+    btif_av_cb[i].remote_start_alarm = NULL;
+    btif_av_cb[i].suspend_rsp_track_timer = NULL;
+    btif_av_cb[i].fake_suspend_rsp = false;
+    memset(&collision_detect[i].bd_addr, 0, sizeof(RawAddress));
+    collision_detect[i].conn_retry_count = 1;
+    collision_detect[i].av_coll_detected_timer = NULL;
+  }
   return init_src(callbacks, codec_priorities, max_connected_audio_devices, a2dp_multicast_state);
 }
 
@@ -3893,6 +4012,7 @@ void btif_av_trigger_dual_handoff(bool handoff, int current_active_index, int pr
       BTIF_TRACE_DEBUG("Initiate SUSPEND for this device on index = %d", previous_active_index);
       btif_av_cb[previous_active_index].dual_handoff = handoff; /*Initiate Handoff*/
       btif_sm_dispatch(btif_av_cb[previous_active_index].sm_handle, BTIF_AV_SUSPEND_STREAM_REQ_EVT, NULL);
+      btif_av_set_suspend_rsp_track_timer(previous_active_index);
     }
   }
   if (btif_av_is_split_a2dp_enabled()) {
@@ -4030,8 +4150,19 @@ static bt_status_t disconnect(const RawAddress& bd_addr) {
  *
  ******************************************************************************/
 static bt_status_t set_active_device(const RawAddress& bd_addr) {
-  BTIF_TRACE_EVENT("%s", __func__);
   CHECK_BTAV_INIT();
+
+  int active_index = btif_av_get_latest_device_idx_to_start();
+  int set_active_device_index = btif_av_idx_by_bdaddr(&(RawAddress&)bd_addr);
+  BTIF_TRACE_EVENT("%s: active_index: %d, set_active_device_index: %d, flags: %d",
+               __func__, active_index, set_active_device_index,
+             btif_av_cb[set_active_device_index].flags & BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING);
+  if (active_index < btif_max_av_clients &&
+      ((btif_av_cb[active_index].flags & BTIF_AV_FLAG_PENDING_START) ||
+       (btif_av_cb[set_active_device_index].flags & BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING))) {
+    BTIF_TRACE_ERROR("%s: Pending Start/Suspend Response on current device, Return Fail",__func__);
+    return BT_STATUS_NOT_READY;
+  }
 
   if (!bta_av_co_set_active_peer(bd_addr)) {
     BTIF_TRACE_WARNING("%s: unable to set active peer in BtaAvCo",__func__);
@@ -4167,6 +4298,14 @@ static void cleanup(int service_uuid) {
   btif_disable_service(service_uuid);
 
   btif_disable_service(BTA_TWS_PLUS_SERVICE_ID);
+
+  for (int i = 0; i < btif_max_av_clients; i++) {
+    btif_av_clear_suspend_rsp_track_timer(i);
+    collision_detect[i].conn_retry_count = 1;
+    alarm_free(collision_detect[i].av_coll_detected_timer);
+    collision_detect[i].av_coll_detected_timer = NULL;
+    memset(&collision_detect[i].bd_addr, 0, sizeof(RawAddress));
+  }
 
   alarm_free(av_open_on_rc_timer);
   av_open_on_rc_timer = NULL;
@@ -4323,19 +4462,16 @@ RawAddress btif_av_get_addr(RawAddress address) {
  *
  * Returns          void. Updates the peer_bda argument
  *******************************************************************************/
-void btif_av_get_peer_addr(RawAddress* peer_bda) {
-  btif_sm_state_t state = BTIF_AV_STATE_IDLE;
-  for (int i = 0; i < btif_max_av_clients; i++) {
-    state = btif_sm_get_state(btif_av_cb[i].sm_handle);
-    if ((state == BTIF_AV_STATE_OPENED) ||
-        (state == BTIF_AV_STATE_STARTED)) {
-      BTIF_TRACE_DEBUG("btif_av_get_peer_addr: %u state: %d ",
-              btif_av_cb[i].peer_bda, state);
-      *peer_bda = btif_av_cb[i].peer_bda;
-      if (state == BTIF_AV_STATE_STARTED)
-        break;
-    }
+void btif_av_get_active_peer_addr(RawAddress* peer_bda) {
+  // Find the peer that is currently Active.
+  tBTA_AV_CO_PEER* p_peer = nullptr;
+  p_peer = bta_av_co_get_active_peer();
+  if (p_peer == nullptr) {
+    APPL_TRACE_ERROR("%s: no active peer device found", __func__);
+    return;
   }
+  BTIF_TRACE_DEBUG("%s: active peer_add: %s ", __func__, p_peer->addr.ToString().c_str());
+  *peer_bda = p_peer->addr;
 }
 
 /*******************************************************************************
@@ -5548,6 +5684,20 @@ bool btif_av_is_tws_device_playing(int index) {
   }
   return false;
 }
+bool btif_av_is_tws_pair_remote_started(int index) {
+  int i;
+  btif_sm_state_t state = BTIF_AV_STATE_IDLE;
+  for (i = 0; i < btif_max_av_clients; i++) {
+    state = btif_sm_get_state(btif_av_cb[i].sm_handle);
+    if (i != index && state == BTIF_AV_STATE_STARTED) {
+      if (btif_av_cb[i].tws_device && btif_av_cb[i].remote_started) {
+        BTIF_TRACE_EVENT("%s: on index = %d",__func__,i);
+        return true;
+      }
+    }
+  }
+  return false;
+}
 bool btif_av_is_tws_suspend_triggered(int index) {
   for (int i = 0; i < btif_max_av_clients; i++) {
     if (i != index && btif_av_cb[i].tws_device) {
@@ -5892,3 +6042,46 @@ int btif_get_max_allowable_sink_connections() {
     }
     return no_of_conn;
 }
+
+void btif_av_set_suspend_rsp_track_timer(int index) {
+  int *arg = NULL;
+  arg = (int *) osi_malloc(sizeof(int));
+  *arg = index;
+  BTIF_TRACE_DEBUG("%s: index: %d", __func__, index);
+  if (alarm_is_scheduled(btif_av_cb[index].suspend_rsp_track_timer)) {
+    alarm_cancel(btif_av_cb[index].suspend_rsp_track_timer);
+    BTIF_TRACE_DEBUG("%s: Deleting previously queued timer if any.", __func__);
+  }
+  alarm_set_on_mloop(btif_av_cb[index].suspend_rsp_track_timer,
+                     BTIF_SUSPEND_RSP_FROM_REMOTE_TOUT,
+                     btif_av_set_suspend_rsp_track_timer_tout, (void *)arg);
+}
+
+void btif_av_set_suspend_rsp_track_timer_tout(void* data) {
+  int *arg = (int *)data;
+  if (!arg) {
+    BTIF_TRACE_ERROR("%s: index is null, return", __func__);
+    return;
+  }
+
+  int index = *arg;
+  RawAddress addr = btif_av_get_addr_by_index(index);
+  BTIF_TRACE_DEBUG("%s:fake suspend resp on index: %d, addr: %s",
+                                     __func__, index, addr.ToString().c_str());
+  btif_av_cb[index].fake_suspend_rsp = true;
+  bta_av_fake_suspend_rsp(addr);
+  if (arg) {
+    osi_free(arg);
+  }
+}
+
+void btif_av_clear_suspend_rsp_track_timer(int index) {
+   BTIF_TRACE_DEBUG("%s: index: %d", __func__, index);
+   if (index < btif_max_av_clients && index >= 0) {
+     btif_av_cb[index].fake_suspend_rsp = false;
+     if (btif_av_cb[index].suspend_rsp_track_timer != NULL)
+       alarm_free(btif_av_cb[index].suspend_rsp_track_timer);
+     btif_av_cb[index].suspend_rsp_track_timer = NULL;
+   }
+ }
+
