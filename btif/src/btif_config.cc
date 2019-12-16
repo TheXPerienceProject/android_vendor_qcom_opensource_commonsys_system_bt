@@ -492,7 +492,7 @@ bool btif_config_get_bin(const char* section, const char* key, uint8_t* value,
       btif_is_key_encrypted(svalue_str_from_config->size(), skey);
 
   if (in_encrypt_key_name_list && is_key_encrypted) {
-    VLOG(1) << __func__ << " decrypt section: " << section << " key:" << key;
+    VLOG(2) << __func__ << " decrypt section: " << section << " key:" << key;
     std::string tmp_value_str =
         btif_convert_to_unencrypt_key(*svalue_str_from_config);
     value_str = &tmp_value_str;
@@ -512,7 +512,7 @@ bool btif_config_get_bin(const char* section, const char* key, uint8_t* value,
 
   if (btif_is_niap_mode()) {
     if (in_encrypt_key_name_list && !is_key_encrypted) {
-      VLOG(1) << __func__ << " encrypt section: " << section << " key:" << key;
+      VLOG(2) << __func__ << " encrypt section: " << section << " key:" << key;
       std::string encrypt_str =
           btif_convert_to_encrypt_key(*svalue_str_from_config);
      const char *cencrypt_str = encrypt_str.c_str();
@@ -606,6 +606,7 @@ bool btif_config_set_bin(const char* section, const char* key,
   std::string skey= key;
   std::string value_str;
   if (btif_is_niap_mode() && btif_in_encrypt_key_name_list(skey)) {
+    VLOG(2) << __func__ << " encrypt section: " << section << " key:" << key;
     value_str = btif_convert_to_encrypt_key(str);
   } else {
     value_str = str;
