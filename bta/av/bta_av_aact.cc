@@ -1840,6 +1840,13 @@ void bta_av_str_opened(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
     APPL_TRACE_ERROR("%s: Calling AVDT_AbortReq", __func__);
     AVDT_AbortReq(p_scb->avdt_handle);
   }
+
+  //To pass SNK AVDTP PTS, AVDTP/SNK/INT/SIG/SMG/BV-19-C
+  if ((osi_property_get("bluetooth.pts.force_a2dp_start", value, "false")) &&
+      (!strcmp(value, "true"))) {
+    APPL_TRACE_ERROR("%s: Calling AVDT_StartReq", __func__);
+    AVDT_StartReq(&p_scb->avdt_handle, 1);
+  }
 }
 
 /*******************************************************************************
@@ -3630,6 +3637,11 @@ void bta_av_rcfg_cfm(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
      * timeout) */
     if ((err_code != AVDT_ERR_TIMEOUT) || disable_avdtp_reconfigure) {
       p_scb->recfg_sup = false;
+    }
+
+    if (p_scb->started) {
+      APPL_TRACE_WARNING("%s: set p_scb->started to false", __func__);
+      p_scb->started = false;
     }
     /* started flag is false when reconfigure command is sent */
     /* drop the buffers queued in L2CAP */
