@@ -500,6 +500,7 @@ bool btif_config_get_bin(const char* section, const char* key, uint8_t* value,
     value_str = svalue_str_from_config;
   }
 
+  if (!value_str) return false;
   const char* cvalue_str= value_str->c_str();
   size_t value_len = strlen(cvalue_str);
   if ((value_len % 2) != 0 || *length < (value_len / 2)) return false;
@@ -515,7 +516,7 @@ bool btif_config_get_bin(const char* section, const char* key, uint8_t* value,
       VLOG(2) << __func__ << " encrypt section: " << section << " key:" << key;
       std::string encrypt_str =
           btif_convert_to_encrypt_key(*svalue_str_from_config);
-     const char *cencrypt_str = encrypt_str.c_str();
+      const char *cencrypt_str = encrypt_str.c_str();
       config_set_string(config, section, key, cencrypt_str);
     }
   } else {
@@ -611,6 +612,7 @@ bool btif_config_set_bin(const char* section, const char* key,
   } else {
     value_str = str;
   }
+  if (value_str.empty()) return false;
   const char *enc_str = value_str.c_str();
   {
     std::unique_lock<std::recursive_mutex> lock(config_lock);
