@@ -20,6 +20,7 @@
 
 #include "btif_config.h"
 
+#include <base/base64.h>
 #include <base/logging.h>
 #include <ctype.h>
 #include <openssl/rand.h>
@@ -60,8 +61,8 @@ static const char* TIME_STRING_FORMAT = "%Y-%m-%d %H:%M:%S";
 
 constexpr int kBufferSize = 400 * 10;  // initial file is ~400B
 
-static bool use_key_attestation() {
-  return getuid() == AID_BLUETOOTH && is_single_user_mode();
+static bool btif_is_niap_mode() {
+  return getuid() == AID_BLUETOOTH && is_niap_mode();
 }
 
 #define BT_CONFIG_METRICS_SECTION "Metrics"
@@ -93,9 +94,21 @@ static void btif_config_remove_restricted(config_t* config);
 static config_t* btif_config_open(const char* filename, const char* checksum_filename);
 
 // Key attestation
+static std::string btif_convert_to_encrypt_key(
+    const std::string& unencrypt_str);
+static std::string btif_convert_to_unencrypt_key(
+    const std::string& encrypt_str);
+static bool btif_in_encrypt_key_name_list(std::string key);
+static bool btif_is_key_encrypted(int key_from_config_size,
+                                  std::string key_type_string);
 static std::string hash_file(const char* filename);
 static std::string read_checksum_file(const char* filename);
 static void write_checksum_file(const char* filename, const std::string& hash);
+
+static const int ENCRYPT_KEY_NAME_LIST_SIZE = 7;
+static const std::string encrypt_key_name_list[] = {
+    "LinkKey",      "LE_KEY_PENC", "LE_KEY_PID",  "LE_KEY_LID",
+    "LE_KEY_PCSRK", "LE_KEY_LENC", "LE_KEY_LCSRK"};
 
 static enum ConfigSource {
   NOT_LOADED,
@@ -282,7 +295,8 @@ static config_t* btif_config_open(const char* filename, const char* checksum_fil
   std::string stored_hash = read_checksum_file(checksum_filename);
   if (stored_hash.empty()) {
     LOG(ERROR) << __func__ << ": stored_hash=<empty>";
-    if (!current_hash.empty()) {
+    // Will encrypt once since the bt_config never encrypt.
+    if (!btif_keystore.DoesKeyExist() && !current_hash.empty()) {
       write_checksum_file(checksum_filename, current_hash);
       stored_hash = read_checksum_file(checksum_filename);
     }
@@ -461,24 +475,102 @@ bool btif_config_get_bin(const char* section, const char* key, uint8_t* value,
   CHECK(length != NULL);
 
   std::unique_lock<std::recursive_mutex> lock(config_lock);
-  const char* value_str = config_get_string(config, section, key, NULL);
+  const std::string* value_str;
+  const char* value_str_from_config =  config_get_string(config, section, key, NULL);
 
-  if (!value_str) {
-    VLOG(2)  << __func__ << ": cannot find string for section " << section
-                 << ", key " << key;
+  if (!value_str_from_config) {
+    VLOG(1) << __func__ << ": cannot find string for section " << section
+            << ", key " << key;
     return false;
   }
 
-  size_t value_len = strlen(value_str);
+  std::string skey= key;
+  std::string svalue_str_from_config1 = value_str_from_config;
+  std::string* svalue_str_from_config = &svalue_str_from_config1;
+  bool in_encrypt_key_name_list = btif_in_encrypt_key_name_list(skey);
+  bool is_key_encrypted =
+      btif_is_key_encrypted(svalue_str_from_config->size(), skey);
+
+  if (in_encrypt_key_name_list && is_key_encrypted) {
+    VLOG(1) << __func__ << " decrypt section: " << section << " key:" << key;
+    std::string tmp_value_str =
+        btif_convert_to_unencrypt_key(*svalue_str_from_config);
+    value_str = &tmp_value_str;
+  } else {
+    value_str = svalue_str_from_config;
+  }
+
+  const char* cvalue_str= value_str->c_str();
+  size_t value_len = strlen(cvalue_str);
   if ((value_len % 2) != 0 || *length < (value_len / 2)) return false;
 
   for (size_t i = 0; i < value_len; ++i)
-    if (!isxdigit(value_str[i])) return false;
+    if (!isxdigit(cvalue_str[i])) return false;
 
-  for (*length = 0; *value_str; value_str += 2, *length += 1)
-    sscanf(value_str, "%02hhx", &value[*length]);
+  for (*length = 0; *cvalue_str; cvalue_str += 2, *length += 1)
+    sscanf(cvalue_str, "%02hhx", &value[*length]);
+
+  if (btif_is_niap_mode()) {
+    if (in_encrypt_key_name_list && !is_key_encrypted) {
+      VLOG(1) << __func__ << " encrypt section: " << section << " key:" << key;
+      std::string encrypt_str =
+          btif_convert_to_encrypt_key(*svalue_str_from_config);
+     const char *cencrypt_str = encrypt_str.c_str();
+      config_set_string(config, section, key, cencrypt_str);
+    }
+  } else {
+    if (in_encrypt_key_name_list && is_key_encrypted) {
+      config_set_string(config, section, key, cvalue_str);
+    }
+  }
 
   return true;
+}
+
+static bool btif_in_encrypt_key_name_list(std::string key) {
+  return std::find(encrypt_key_name_list,
+                   encrypt_key_name_list + ENCRYPT_KEY_NAME_LIST_SIZE,
+                   key) != (encrypt_key_name_list + ENCRYPT_KEY_NAME_LIST_SIZE);
+}
+
+static bool btif_is_key_encrypted(int key_from_config_size,
+                                  std::string key_type_string) {
+  if (key_type_string.compare("LinkKey") == 0) {
+    return sizeof(LinkKey) * 2 != key_from_config_size;
+  } else if (key_type_string.compare("LE_KEY_PENC") == 0) {
+    return sizeof(tBTM_LE_PENC_KEYS) * 2 != key_from_config_size;
+  } else if (key_type_string.compare("LE_KEY_PID") == 0) {
+    return sizeof(tBTM_LE_PID_KEYS) * 2 != key_from_config_size;
+  } else if (key_type_string.compare("LE_KEY_LID") == 0) {
+    return sizeof(tBTM_LE_PID_KEYS) * 2 != key_from_config_size;
+  } else if (key_type_string.compare("LE_KEY_PCSRK") == 0) {
+    return sizeof(tBTM_LE_PCSRK_KEYS) * 2 != key_from_config_size;
+  } else if (key_type_string.compare("LE_KEY_LENC") == 0) {
+    return sizeof(tBTM_LE_LENC_KEYS) * 2 != key_from_config_size;
+  } else if (key_type_string.compare("LE_KEY_LCSRK") == 0) {
+    return sizeof(tBTM_LE_LCSRK_KEYS) * 2 != key_from_config_size;
+  } else {
+    VLOG(2) << __func__ << ": " << key_type_string
+            << " Key type is unknown, return false first";
+    return false;
+  }
+}
+
+static std::string btif_convert_to_unencrypt_key(
+    const std::string& encrypt_str) {
+  if (!encrypt_str.empty()) {
+    std::string tmp_encrypt_str("");
+    if (base::Base64Decode(encrypt_str, &tmp_encrypt_str)) {
+      std::string unencrypt_str = btif_keystore.Decrypt(tmp_encrypt_str);
+      if (!unencrypt_str.empty()) {
+        return unencrypt_str;
+      }
+    } else {
+      LOG(WARNING) << __func__
+                   << ": base64string decode fail, will return empty string";
+    }
+  }
+  return "";
 }
 
 size_t btif_config_get_bin_length(const char* section, const char* key) {
@@ -511,13 +603,35 @@ bool btif_config_set_bin(const char* section, const char* key,
     str[(i * 2) + 1] = lookup[value[i] & 0x0F];
   }
 
+  std::string skey= key;
+  std::string value_str;
+  if (btif_is_niap_mode() && btif_in_encrypt_key_name_list(skey)) {
+    value_str = btif_convert_to_encrypt_key(str);
+  } else {
+    value_str = str;
+  }
+  const char *enc_str = value_str.c_str();
   {
     std::unique_lock<std::recursive_mutex> lock(config_lock);
-    config_set_string(config, section, key, str);
+    config_set_string(config, section, key, enc_str);
   }
 
   osi_free(str);
   return true;
+}
+
+static std::string btif_convert_to_encrypt_key(
+    const std::string& unencrypt_str) {
+  if (!unencrypt_str.empty()) {
+    std::string encrypt_str = btif_keystore.Encrypt(unencrypt_str, 0);
+    if (!encrypt_str.empty()) {
+      base::Base64Encode(encrypt_str, &encrypt_str);
+      return encrypt_str;
+    } else {
+      LOG(ERROR) << __func__ << ": Encrypt fail, will return empty str.";
+    }
+  }
+  return "";
 }
 
 const btif_config_section_iter_t* btif_config_section_begin(void) {
@@ -718,7 +832,7 @@ static void delete_config_files(void) {
 }
 
 static std::string hash_file(const char* filename) {
-  if (!use_key_attestation()) {
+  if (!btif_is_niap_mode()) {
     LOG(INFO) << __func__ << ": Disabled for multi-user";
     return DISABLED;
   }
@@ -746,7 +860,7 @@ static std::string hash_file(const char* filename) {
 }
 
 static std::string read_checksum_file(const char* checksum_filename) {
-  if (!use_key_attestation()) {
+  if (!btif_is_niap_mode()) {
     LOG(INFO) << __func__ << ": Disabled for multi-user";
     return DISABLED;
   }
@@ -761,7 +875,7 @@ static std::string read_checksum_file(const char* checksum_filename) {
 
 static void write_checksum_file(const char* checksum_filename,
                                 const std::string& hash) {
-  if (!use_key_attestation()) {
+  if (!btif_is_niap_mode()) {
     LOG(INFO) << __func__
               << ": Disabled for multi-user, since config changed removing "
                  "checksums.";
